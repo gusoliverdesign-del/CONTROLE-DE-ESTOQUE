@@ -39,7 +39,7 @@ function load() {
 }
 let saveTimer;
 function save() {
-  try { localStorage.setItem(KEY, JSON.stringify(S)); $('#saveStatus').textContent = 'Salvo às ' + new Date().toLocaleTimeString('pt-BR', {hour: '2-digit', minute: '2-digit'}); }
+  try { localStorage.setItem(KEY, JSON.stringify(S)); $('#saveStatus').textContent = $('#sheetSave').textContent = 'Salvo às ' + new Date().toLocaleTimeString('pt-BR', {hour: '2-digit', minute: '2-digit'}); }
   catch (e) { $('#saveStatus').textContent = 'Não foi possível salvar — faça um backup'; }
   clearTimeout(saveTimer); saveTimer = setTimeout(() => $('#saveStatus').textContent = 'Dados salvos neste navegador', 6000);
 }
@@ -156,9 +156,116 @@ function go(p, opts = {}) {
   if (p === 'estoque' && opts.local === undefined && !opts.keepLocal) F.est.local = F.est.local;
   $('#sidebar').classList.remove('open'); $('#menuBtn').setAttribute('aria-expanded', 'false');
   history.replaceState(null, '', '#' + p);
+  closeSheet(true);
+  syncTabs();
   renderAll();
   window.scrollTo({top: 0, behavior: 'smooth'});
 }
+
+
+/* ---------------- Barra de navegação mobile ---------------- */
+const TABS = ['painel', 'estoque', 'movimentacoes', 'mais'];
+const tabOf = p => TABS.includes(p) ? p : 'mais';
+let tabIdx = 0;
+function moveInd(i, stretch = true) {
+  const ind = $('#tbInd');
+  if (stretch && i !== tabIdx) { ind.classList.add('stretch'); clearTimeout(moveInd.t); moveInd.t = setTimeout(() => ind.classList.remove('stretch'), 240); }
+  ind.style.transform = `translateX(${i * 100}%)`;
+  $$('#tbPill .tb-btn').forEach((b, j) => { b.classList.toggle('active', j === i); b.setAttribute('aria-selected', j === i); });
+  tabIdx = i;
+}
+function pop(i) { const b = $$('#tbPill .tb-btn')[i]; if (!b) return; b.classList.remove('pop'); void b.offsetWidth; b.classList.add('pop'); }
+function syncTabs() { const i = TABS.indexOf(tabOf(page)); if (i !== tabIdx) pop(i); moveInd(i); syncSheetTiles(); }
+function pickTab(i) {
+  const t = TABS[i];
+  if (t === 'mais') { pop(i); moveInd(i); return openSheet(); }
+  if (t === page) { pop(i); return window.scrollTo({top: 0, behavior: 'smooth'}); }
+  go(t);
+}
+// arrastar o dedo pela barra desliza o destaque (como no iOS)
+(() => {
+  const pill = $('#tbPill'), ind = $('#tbInd');
+  let drag = null;
+  const idxAt = x => { const r = pill.getBoundingClientRect(); return Math.max(0, Math.min(3, Math.floor((x - r.left - 4) / ((r.width - 8) / 4)))); };
+  pill.addEventListener('pointerdown', e => { drag = {x: e.clientX, moved: false}; try { pill.setPointerCapture(e.pointerId); } catch (_) {} });
+  pill.addEventListener('pointermove', e => {
+    if (!drag) return;
+    if (!drag.moved && Math.abs(e.clientX - drag.x) < 8) return;
+    drag.moved = true; ind.classList.add('drag');
+    const r = pill.getBoundingClientRect(), w = (r.width - 8) / 4;
+    const pos = Math.max(0, Math.min(3 * w, e.clientX - r.left - 4 - w / 2));
+    ind.style.transition = 'scale .3s cubic-bezier(.34,1.45,.5,1)';
+    ind.style.transform = `translateX(${pos}px)`;
+    const i = idxAt(e.clientX); $$('#tbPill .tb-btn').forEach((b, j) => b.classList.toggle('active', j === i));
+  });
+  const end = e => {
+    if (!drag) return;
+    const i = idxAt(e.clientX), moved = drag.moved; drag = null;
+    ind.classList.remove('drag'); ind.style.transition = '';
+    if (e.type === 'pointercancel') return moveInd(tabIdx, false);
+    if (moved) { suppress = Date.now(); moveInd(i, false); pickTab(i); }
+  };
+  let suppress = 0;
+  pill.addEventListener('pointerup', end); pill.addEventListener('pointercancel', end);
+  // toque simples: tratado no click (evita o "clique fantasma" que fecharia o sheet)
+  pill.addEventListener('click', e => { if (Date.now() - suppress < 500) return; const i = idxAt(e.clientX); moveInd(i); pickTab(i); });
+})();
+$('#tbFab').onclick = () => { const f = $('#tbFab'); f.classList.add('spin'); setTimeout(() => f.classList.remove('spin'), 450); closeSheet(); modalMov(); };
+// compacta ao rolar para baixo, expande ao rolar para cima
+(() => {
+  let last = window.scrollY, ticking = false;
+  window.addEventListener('scroll', () => {
+    if (ticking) return; ticking = true;
+    requestAnimationFrame(() => {
+      const y = window.scrollY, bar = $('#tabbar'), atEnd = y + innerHeight >= document.documentElement.scrollHeight - 30;
+      if (y > last + 6 && y > 90 && !atEnd) bar.classList.add('compact');
+      else if (y < last - 6 || y < 90) bar.classList.remove('compact');
+      last = y; ticking = false;
+    });
+  }, {passive: true});
+  $('#tabbar').addEventListener('click', () => $('#tabbar').classList.remove('compact'));
+})();
+// esconde a barra enquanto o teclado está aberto
+const isField = el => el && el.matches && el.matches('.main input, .main select');
+document.addEventListener('focusin', e => { if (isField(e.target) && matchMedia('(max-width:820px)').matches) $('#tabbar').classList.add('hidden'); });
+document.addEventListener('focusout', () => setTimeout(() => { if (!isField(document.activeElement)) $('#tabbar').classList.remove('hidden'); }, 50));
+
+/* Sheet "Mais" */
+function syncSheetTiles() { $$('.sheet-tile').forEach(t => t.classList.toggle('active', t.dataset.sheetPage === page)); }
+let sheetOpenedAt = 0;
+function openSheet() {
+  sheetOpenedAt = Date.now();
+  const w = $('#sheet'); w.classList.add('open'); w.setAttribute('aria-hidden', 'false');
+  $('#sheetPanel').style.transform = ''; $('#sheetPanel').scrollTop = 0;
+  syncSheetTiles();
+}
+function closeSheet(silent) {
+  const w = $('#sheet'); if (!w.classList.contains('open')) return;
+  w.classList.remove('open'); w.setAttribute('aria-hidden', 'true'); $('#sheetPanel').style.transform = '';
+  if (!silent) moveInd(TABS.indexOf(tabOf(page)));
+}
+$('#sheet').addEventListener('click', e => {
+  if (e.target.closest('[data-sheet-close]')) { if (Date.now() - sheetOpenedAt < 400) return; return closeSheet(); }
+  const t = e.target.closest('[data-sheet-page]'); if (t) return go(t.dataset.sheetPage);
+  const l = e.target.closest('#sheetLocais button'); if (l) return go('estoque', {local: l.dataset.local, status: 'TODOS', search: ''});
+  if (e.target.closest('[data-act]')) closeSheet();
+});
+// arrastar para baixo fecha o sheet
+(() => {
+  const panel = $('#sheetPanel'); let y0 = null, dy = 0;
+  panel.addEventListener('touchstart', e => { if (panel.scrollTop > 0 && !e.target.closest('#grabber')) return; y0 = e.touches[0].clientY; dy = 0; }, {passive: true});
+  panel.addEventListener('touchmove', e => {
+    if (y0 === null) return; dy = e.touches[0].clientY - y0;
+    if (dy <= 0) { panel.classList.remove('dragging'); panel.style.transform = ''; return; }
+    panel.classList.add('dragging'); panel.style.transform = `translateY(${dy}px)`;
+    if (e.cancelable) e.preventDefault();
+  }, {passive: false});
+  panel.addEventListener('touchend', () => {
+    if (y0 === null) return; panel.classList.remove('dragging');
+    if (dy > 110) closeSheet(); else panel.style.transform = '';
+    y0 = null;
+  });
+})();
 
 /* ---------------- Filtros ---------------- */
 const F = {
@@ -174,6 +281,12 @@ function renderSide(rows) {
   const nb = $('#navRepor'); nb.textContent = rep; nb.classList.toggle('zero', !rep);
   const byLoc = new Map(S.locais.map(l => [l.nome, 0]));
   rows.forEach(r => { if (r.status === 'REPOR') byLoc.set(r.local, (byLoc.get(r.local) || 0) + 1); });
+  const tb = $('#tbBadge');
+  if (tb.textContent !== String(rep) && tb.textContent !== '') { tb.classList.remove('bump'); void tb.offsetWidth; tb.classList.add('bump'); }
+  tb.textContent = rep; tb.classList.toggle('zero', !rep);
+  $('#shIns').textContent = S.insumos.length + ' itens';
+  $('#shLoc').textContent = S.locais.length + ' salas';
+  $('#sheetLocais').innerHTML = S.locais.map(l => { const n = byLoc.get(l.nome) || 0; return `<button data-local="${esc(l.nome)}"><span class="lname">${esc(l.nome)}</span><span class="badge${n ? '' : ' zero'}">${n}</span><span class="chev">›</span></button>`; }).join('');
   $('#sideLocais').innerHTML = S.locais.map(l => {
     const n = byLoc.get(l.nome) || 0, act = page === 'estoque' && F.est.local === l.nome && F.est.view === 'local';
     return `<button data-local="${esc(l.nome)}" class="${act ? 'active' : ''}" title="${esc(l.nome)}"><span class="lname">${esc(l.nome)}</span><span class="badge${n ? '' : ' zero'}">${n}</span></button>`;
@@ -659,6 +772,7 @@ $('#movSearch').oninput = e => { F.mov.q = e.target.value; renderAll(); };
 $('#insSearch').oninput = e => { F.ins.q = e.target.value; renderAll(); };
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && $('#overlay').classList.contains('open')) return closeModal();
+  if (e.key === 'Escape' && $('#sheet').classList.contains('open')) return closeSheet();
   const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
   if (typing || e.metaKey || e.ctrlKey || e.altKey || $('#overlay').classList.contains('open')) return;
   if (e.key.toLowerCase() === 'n') { e.preventDefault(); modalMov(); }
