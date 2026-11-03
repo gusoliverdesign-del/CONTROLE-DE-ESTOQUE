@@ -170,9 +170,18 @@ let tabIdx = 0;
 function moveInd(i, stretch = true) {
   const ind = $('#tbInd');
   if (stretch && i !== tabIdx) { ind.classList.add('stretch'); clearTimeout(moveInd.t); moveInd.t = setTimeout(() => ind.classList.remove('stretch'), 240); }
-  ind.style.transform = `translateX(${i * 100}%)`;
+  placeInd(i);
   $$('#tbPill .tb-btn').forEach((b, j) => { b.classList.toggle('active', j === i); b.setAttribute('aria-selected', j === i); });
   tabIdx = i;
+}
+const MOBILE_MQ = matchMedia('(max-width:820px),(orientation:landscape) and (max-height:520px) and (pointer:coarse)');
+const LAND_MQ = matchMedia('(orientation:landscape) and (max-height:520px) and (pointer:coarse)');
+const tabBtns = () => $$('#tbPill .tb-btn');
+// posiciona o destaque exatamente sobre a aba (funciona com abas de larguras diferentes)
+function placeInd(i) {
+  const b = tabBtns()[i], ind = $('#tbInd'); if (!b) return;
+  ind.style.width = b.offsetWidth + 'px';
+  ind.style.transform = `translateX(${b.offsetLeft}px)`;
 }
 function pop(i) { const b = $$('#tbPill .tb-btn')[i]; if (!b) return; b.classList.remove('pop'); void b.offsetWidth; b.classList.add('pop'); }
 function syncTabs() { const i = TABS.indexOf(tabOf(page)); if (i !== tabIdx) pop(i); moveInd(i); syncSheetTiles(); }
@@ -186,17 +195,22 @@ function pickTab(i) {
 (() => {
   const pill = $('#tbPill'), ind = $('#tbInd');
   let drag = null;
-  const idxAt = x => { const r = pill.getBoundingClientRect(); return Math.max(0, Math.min(3, Math.floor((x - r.left - 4) / ((r.width - 8) / 4)))); };
+  const idxAt = x => {
+    let best = 0, bd = Infinity;
+    tabBtns().forEach((b, j) => { const r = b.getBoundingClientRect(), d = x < r.left ? r.left - x : x > r.right ? x - r.right : 0; if (d < bd) { bd = d; best = j; } });
+    return best;
+  };
   pill.addEventListener('pointerdown', e => { drag = {x: e.clientX, moved: false}; try { pill.setPointerCapture(e.pointerId); } catch (_) {} });
   pill.addEventListener('pointermove', e => {
     if (!drag) return;
     if (!drag.moved && Math.abs(e.clientX - drag.x) < 8) return;
     drag.moved = true; ind.classList.add('drag');
-    const r = pill.getBoundingClientRect(), w = (r.width - 8) / 4;
-    const pos = Math.max(0, Math.min(3 * w, e.clientX - r.left - 4 - w / 2));
-    ind.style.transition = 'scale .3s cubic-bezier(.34,1.45,.5,1)';
-    ind.style.transform = `translateX(${pos}px)`;
-    const i = idxAt(e.clientX); $$('#tbPill .tb-btn').forEach((b, j) => b.classList.toggle('active', j === i));
+    const i = idxAt(e.clientX), bs = tabBtns(), w = bs[i].offsetWidth, r = pill.getBoundingClientRect();
+    const first = bs[0].offsetLeft, lastB = bs[bs.length - 1], max = lastB.offsetLeft + lastB.offsetWidth - w;
+    const pos = Math.max(first, Math.min(max, e.clientX - r.left - w / 2));
+    ind.style.transition = 'scale .3s cubic-bezier(.34,1.45,.5,1), width .3s ease';
+    ind.style.width = w + 'px';
+    ind.style.transform = `translateX(${pos}px)`; $$('#tbPill .tb-btn').forEach((b, j) => b.classList.toggle('active', j === i));
   });
   const end = e => {
     if (!drag) return;
@@ -218,7 +232,7 @@ $('#tbFab').onclick = () => { const f = $('#tbFab'); f.classList.add('spin'); se
     if (ticking) return; ticking = true;
     requestAnimationFrame(() => {
       const y = window.scrollY, bar = $('#tabbar'), atEnd = y + innerHeight >= document.documentElement.scrollHeight - 30;
-      if (y > last + 6 && y > 90 && !atEnd) bar.classList.add('compact');
+      if (y > last + 6 && y > 90 && !atEnd && !LAND_MQ.matches) bar.classList.add('compact');
       else if (y < last - 6 || y < 90) bar.classList.remove('compact');
       last = y; ticking = false;
     });
@@ -227,8 +241,14 @@ $('#tbFab').onclick = () => { const f = $('#tbFab'); f.classList.add('spin'); se
 })();
 // esconde a barra enquanto o teclado está aberto
 const isField = el => el && el.matches && el.matches('.main input, .main select');
-document.addEventListener('focusin', e => { if (isField(e.target) && matchMedia('(max-width:820px)').matches) $('#tabbar').classList.add('hidden'); });
+document.addEventListener('focusin', e => { if (isField(e.target) && MOBILE_MQ.matches) $('#tabbar').classList.add('hidden'); });
 document.addEventListener('focusout', () => setTimeout(() => { if (!isField(document.activeElement)) $('#tabbar').classList.remove('hidden'); }, 50));
+
+const relayout = () => { $('#tabbar').classList.remove('compact'); placeInd(tabIdx); };
+window.addEventListener('resize', relayout);
+LAND_MQ.addEventListener && LAND_MQ.addEventListener('change', () => setTimeout(relayout, 60));
+$('#tbPill').addEventListener('transitionend', e => { if (e.propertyName === 'height') placeInd(tabIdx); });
+document.fonts && document.fonts.ready.then(() => placeInd(tabIdx));
 
 /* Sheet "Mais" */
 function syncSheetTiles() { $$('.sheet-tile').forEach(t => t.classList.toggle('active', t.dataset.sheetPage === page)); }
