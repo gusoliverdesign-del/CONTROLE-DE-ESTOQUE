@@ -195,15 +195,25 @@ function showLogin(msg, view = 'entrar') {
 }
 function hideLogin() { $('#login').hidden = true; document.body.classList.remove('locked'); }
 const isAdmin = () => !!(membro && membro.admin && membro.status === 'aprovado');
+const initials = n => String(n || '').trim().split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join('').toUpperCase();
 function renderAccount() {
   const email = me ? me.email : '';
+  const nome = (membro && membro.nome) || (email ? email.split('@')[0] : '');
+  const cargo = (membro && membro.cargo) || '', setor = (membro && membro.setor) || '';
   $$('[data-acct-email]').forEach(el => el.textContent = membro && membro.nome ? `${membro.nome} · ${email}` : email);
+  $$('[data-pf-av]').forEach(el => el.textContent = me ? (initials(nome) || '?') : '');
+  $$('[data-pf-av]').forEach(el => { if (!me) el.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>'; });
+  $$('[data-pf-name]').forEach(el => el.textContent = me ? nome : 'Opções');
+  $$('[data-pf-role]').forEach(el => el.textContent = me ? [cargo, setor].filter(Boolean).join(' · ') : (CLOUD ? '' : 'Dados neste navegador'));
+  $$('[data-pf-email]').forEach(el => el.textContent = me ? email : 'Sem conta: dados só neste navegador');
+  $$('[data-pf-tags]').forEach(el => el.innerHTML = me ? [cargo, setor].filter(Boolean).map(t => `<i>${esc(t)}</i>`).join('') + (isAdmin() ? '<i class="adm">ADMIN</i>' : '') : '');
   $$('[data-acct]').forEach(el => el.hidden = !me);
   $$('[data-admin]').forEach(el => el.hidden = !isAdmin());
   const pend = isAdmin() ? membros.filter(m => m.status === 'pendente').length : 0;
-  [['#navEquipe', false], ['#sheetEquipe', false], ['#tbBadgeMais', true]].forEach(([sel, txt]) => {
+  [['#navEquipe', false], ['#sheetEquipe', false], ['#tbBadgeMais', true], ['#pfEquipe', false]].forEach(([sel, txt]) => {
     const el = $(sel); if (!el) return; el.textContent = pend; el.classList.toggle('zero', !pend);
   });
+  $('#pfDot').hidden = !pend;
 }
 // verifica se a conta foi aprovada (tabela "membros")
 async function checkMember() {
@@ -333,7 +343,7 @@ function loginForm() {
     if (g.password.value !== g.password2.value) return err('As senhas não são iguais.');
     err(''); btn.disabled = true; btn.textContent = 'Criando conta…';
     try {
-      const {data, error} = await sb.auth.signUp({email, password: g.password.value, options: {data: {nome}}});
+      const {data, error} = await sb.auth.signUp({email, password: g.password.value, options: {data: {nome, cargo: g.cargo.value.trim(), setor: g.setor.value.trim()}}});
       if (error) throw error;
       g.password.value = g.password2.value = '';
       if (data.session) { await enter(data.user); return; }
@@ -359,6 +369,38 @@ async function logout(force) {
   stopWatchAccess();
   S = EMPTY(); me = null; membro = null; membros = []; renderAccount(); renderAll(); showLogin();
   try { await sb.auth.signOut(); } catch (e) {}
+}
+function modalPerfil() {
+  if (!me) return;
+  const m = membro || {};
+  if (m.legacy) return toast('Para editar o perfil, rode o schema.sql atualizado no Supabase.', null, true);
+  const setores = [...new Set(membros.map(x => x.setor).filter(Boolean))];
+  openModal(head('Sua conta', 'Editar perfil') + `
+  <form class="form" id="fPerfil" autocomplete="off">
+    <div class="full" style="display:flex;align-items:center;gap:14px;margin:0 0 24px"><span class="pf-av lg" id="pfPreview">${esc(initials(m.nome || me.email) || '?')}</span><div style="min-width:0"><b style="display:block;font-weight:600">${esc(me.email)}</b><small style="color:#8a8a86">${isAdmin() ? 'Administrador' : 'Membro da equipe'} · o e-mail não pode ser alterado</small></div></div>
+    <label class="full">Nome<input name="nome" value="${esc(m.nome || '')}" maxlength="60" required autofocus placeholder="Como a equipe te conhece"></label>
+    <label>Cargo<input name="cargo" value="${esc(m.cargo || '')}" maxlength="60" placeholder="Ex.: Técnico de laboratório"></label>
+    <label>Setor<input name="setor" list="dlSetor" value="${esc(m.setor || '')}" maxlength="60" placeholder="Ex.: Biologia Molecular"><datalist id="dlSetor">${setores.map(x => `<option value="${esc(x)}">`).join('')}</datalist></label>
+    <div class="error" id="perfilErr"></div>
+    <div class="form-actions"><span style="font-size:12px;color:#777">Seu nome aparece nas movimentações que você registrar.</span><div class="right"><button class="btn ghost" type="button" data-close>Cancelar</button><button class="btn accent" type="submit">Salvar</button></div></div>
+  </form>`, root => {
+    const f = $('#fPerfil', root);
+    f.nome.oninput = () => $('#pfPreview', root).textContent = initials(f.nome.value) || '?';
+    f.onsubmit = async ev => {
+      ev.preventDefault();
+      const nome = f.nome.value.trim(), cargo = f.cargo.value.trim(), setor = f.setor.value.trim();
+      if (!nome) return $('#perfilErr', root).textContent = 'Informe o seu nome.';
+      const btn = $('button[type=submit]', f); btn.disabled = true; btn.textContent = 'Salvando…';
+      const {error} = await sb.rpc('atualizar_perfil', {p_nome: nome, p_cargo: cargo, p_setor: setor});
+      btn.disabled = false; btn.textContent = 'Salvar';
+      if (error) return $('#perfilErr', root).textContent = /atualizar_perfil|function|PGRST202/i.test(error.message + error.code) ? 'Rode o schema.sql atualizado no Supabase para ativar esta opção.' : 'Não foi possível salvar: ' + errMsg(error);
+      const old = (membro.nome || '').toUpperCase();
+      membro = {...membro, nome, cargo, setor};
+      try { localStorage.setItem(KEY + '-membro', JSON.stringify(membro)); if ((localStorage.getItem(KEY + '-resp') || '') === old) localStorage.removeItem(KEY + '-resp'); } catch (e) {}
+      renderAccount(); closeModal(); toast('Perfil atualizado');
+      if (isAdmin()) loadMembros();
+    };
+  });
 }
 function modalSenha() {
   openModal(head('Sua conta', 'Alterar senha') + `
@@ -647,7 +689,7 @@ function renderEquipe() {
     if (m.status === 'pendente') acts.push(`<button class="mini-btn go" data-m="aprovar">Aprovar</button>`, `<button class="mini-btn stop" data-m="bloquear">Recusar</button>`);
     if (m.status === 'aprovado' && !self) acts.push(m.admin ? `<button class="mini-btn" data-m="rebaixar">Tirar admin</button>` : `<button class="mini-btn" data-m="promover">Tornar admin</button>`, `<button class="mini-btn stop" data-m="bloquear">Bloquear</button>`);
     if (m.status === 'bloqueado') acts.push(`<button class="mini-btn" data-m="aprovar">Desbloquear</button>`);
-    return `<tr data-uid="${esc(m.user_id)}"><td class="name">${esc(m.nome || '—')}${self ? ' <span class="muted" style="font-size:11px">(você)</span>' : ''}<div class="eq-mail">${esc(m.email)}</div><div class="eq-mail"><span class="pill ${m.status.toUpperCase()}" style="margin-top:6px">${m.status.toUpperCase()}${m.admin ? ' · ADMIN' : ''}</span></div></td><td class="muted hide-sm">${esc(m.email)}</td><td class="hide-sm"><span class="pill ${m.status.toUpperCase()}">${m.status.toUpperCase()}</span></td><td class="hide-sm">${m.admin ? '<span class="role">ADMIN</span>' : '<span class="muted">Membro</span>'}</td><td class="muted hide-sm num">${m.criado_em ? fmtDate(String(m.criado_em).slice(0, 10)) : '—'}</td><td><div class="member-actions">${acts.join('') || '<span class="muted" style="font-size:12px">—</span>'}</div></td></tr>`;
+    return `<tr data-uid="${esc(m.user_id)}"><td class="name">${esc(m.nome || '—')}${self ? ' <span class="muted" style="font-size:11px">(você)</span>' : ''}${m.cargo || m.setor ? `<div style="font-size:12px;color:#9e9d99;margin-top:2px">${esc([m.cargo, m.setor].filter(Boolean).join(' · '))}</div>` : ''}<div class="eq-mail">${esc(m.email)}</div><div class="eq-mail"><span class="pill ${m.status.toUpperCase()}" style="margin-top:6px">${m.status.toUpperCase()}${m.admin ? ' · ADMIN' : ''}</span></div></td><td class="muted hide-sm">${esc(m.email)}</td><td class="hide-sm"><span class="pill ${m.status.toUpperCase()}">${m.status.toUpperCase()}</span></td><td class="hide-sm">${m.admin ? '<span class="role">ADMIN</span>' : '<span class="muted">Membro</span>'}</td><td class="muted hide-sm num">${m.criado_em ? fmtDate(String(m.criado_em).slice(0, 10)) : '—'}</td><td><div class="member-actions">${acts.join('') || '<span class="muted" style="font-size:12px">—</span>'}</div></td></tr>`;
   }).join('') || '<tr><td colspan="6" class="empty">Ninguém por aqui.</td></tr>') + '</tbody>';
   $$('tbody tr[data-uid]', t).forEach(tr => tr.onclick = async e => {
     const b = e.target.closest('[data-m]'); if (!b) return;
@@ -1136,6 +1178,30 @@ function handleFile(file) {
   rd.readAsArrayBuffer(file);
 }
 
+/* ---------------- Menu do perfil (computador) ---------------- */
+function togglePf(open) {
+  const menu = $('#pfMenu'), btn = $('#pfBtn');
+  open = open === undefined ? menu.hidden : open;
+  menu.hidden = !open; btn.setAttribute('aria-expanded', open);
+  if (open) { const f = $('button:not([hidden])', menu); f && f.focus({preventScroll: true}); }
+}
+$('#pfBtn').onclick = e => { e.stopPropagation(); togglePf(); };
+document.addEventListener('click', e => {
+  if ($('#pfMenu').hidden) return;
+  if (!e.target.closest('#pfMenu')) return togglePf(false);
+  if (e.target.closest('button')) setTimeout(() => togglePf(false), 0);
+});
+$('#pfMenu').addEventListener('click', e => { const g = e.target.closest('[data-page-go]'); if (g) go(g.dataset.pageGo); });
+document.addEventListener('keydown', e => {
+  if ($('#pfMenu').hidden) return;
+  if (e.key === 'Escape') { togglePf(false); $('#pfBtn').focus(); }
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    const items = $$('#pfMenu button').filter(b => b.offsetParent), i = items.indexOf(document.activeElement);
+    items[(i + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length].focus();
+  }
+});
+
 /* ---------------- Eventos globais ---------------- */
 document.addEventListener('click', e => {
   const nav = e.target.closest('#sideNav button'); if (nav) return go(nav.dataset.page);
@@ -1151,6 +1217,7 @@ document.addEventListener('click', e => {
   if (act === 'export-view') exportView();
   if (act === 'export-json') exportJson();
   if (act === 'password') modalSenha();
+  if (act === 'edit-profile') modalPerfil();
   if (act === 'logout') logout();
   if (act === 'refresh') reloadAll().then(() => toast('Dados atualizados')).catch(e => toast('Não foi possível atualizar: ' + errMsg(e), null, true));
   if (act === 'import') { $('#fileInput').value = ''; $('#fileInput').click(); }
@@ -1189,6 +1256,7 @@ window.addEventListener('hashchange', () => { const h = location.hash.slice(1); 
 const start = (location.hash || '').slice(1);
 if (PAGES.includes(start) && start !== 'equipe') page = start;
 if (CLOUD) { showLogin(); loginForm(); }
+renderAccount();
 go(page);
 if (CLOUD) startCloud();
 })();

@@ -45,6 +45,7 @@ Os dados ficam num banco de dados compartilhado no [Supabase](https://supabase.c
 - Qualquer pessoa pode tocar em **Criar conta**, mas entra como **pendente** e não vê nada do estoque.
 - Administradores aprovam, recusam ou bloqueiam contas em **Equipe**, e recebem um aviso quando chega um pedido novo.
 - Quando a conta é aprovada, a tela da pessoa libera sozinha. Quando é bloqueada, ela sai do estoque na hora.
+- Cada pessoa edita o próprio perfil (nome, cargo e setor) no menu do perfil, no canto superior direito. No celular, fica em **Mais**.
 - As regras ficam no próprio banco (RLS), então valem mesmo para quem tentar acessar fora do site.
 
 A URL do projeto e a chave *publishable* ficam em `config.js`. Essa chave é pública por design: o acesso aos dados é protegido pelo login e pelas regras de segurança (RLS) do `schema.sql`. Se os valores de `config.js` forem apagados, a plataforma volta a funcionar só no navegador, sem equipe.

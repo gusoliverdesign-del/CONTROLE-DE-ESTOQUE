@@ -49,6 +49,10 @@ create table if not exists public.membros (
   criado_em timestamptz not null default now()
 );
 
+-- perfil: cargo e setor
+alter table public.membros add column if not exists cargo text not null default '';
+alter table public.membros add column if not exists setor text not null default '';
+
 -- contas que já existiam antes desta versão continuam com acesso
 insert into public.membros (user_id, email, nome, status, admin, criado_em)
 select u.id, u.email, coalesce(u.raw_user_meta_data ->> 'nome', ''), 'aprovado', false, u.created_at
@@ -65,8 +69,9 @@ create or replace function public.novo_membro() returns trigger
 language plpgsql security definer set search_path = public as $$
 declare primeiro boolean := not exists (select 1 from public.membros where admin);
 begin
-  insert into public.membros (user_id, email, nome, status, admin)
+  insert into public.membros (user_id, email, nome, cargo, setor, status, admin)
   values (new.id, new.email, coalesce(new.raw_user_meta_data ->> 'nome', ''),
+          coalesce(new.raw_user_meta_data ->> 'cargo', ''), coalesce(new.raw_user_meta_data ->> 'setor', ''),
           case when primeiro then 'aprovado' else 'pendente' end, primeiro)
   on conflict (user_id) do nothing;
   return new;
@@ -127,6 +132,18 @@ end $$;
 drop trigger if exists membros_protege on public.membros;
 create trigger membros_protege before update on public.membros
   for each row execute function public.membros_protege();
+
+-- cada pessoa edita o próprio perfil (nome, cargo, setor), sem poder mudar status ou função
+create or replace function public.atualizar_perfil(p_nome text, p_cargo text, p_setor text) returns void
+language sql security definer set search_path = public as $$
+  update public.membros
+     set nome  = left(trim(coalesce(p_nome, '')), 60),
+         cargo = left(trim(coalesce(p_cargo, '')), 60),
+         setor = left(trim(coalesce(p_setor, '')), 60)
+   where user_id = auth.uid();
+$$;
+revoke all on function public.atualizar_perfil(text, text, text) from public, anon;
+grant execute on function public.atualizar_perfil(text, text, text) to authenticated;
 
 -- quem registrou a movimentação não pode ser alterado depois
 create or replace function public.movs_preserva_autor() returns trigger
