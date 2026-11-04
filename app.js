@@ -83,6 +83,7 @@ function commit(msg, fn) {
 }
 
 /* ---------------- Nuvem (Supabase): banco compartilhado pela equipe ---------------- */
+let membro = null, membros = [], accessChannel = null, pendingPoll = null;
 let sb = null, me = null, pushing = 0, reloadWanted = false, channel = null, reloadT = null;
 const numOrNull = v => v === null || v === undefined || v === '' ? null : Number(v);
 const T = {
@@ -169,6 +170,7 @@ function subscribe() {
   if (channel) sb.removeChannel(channel);
   channel = sb.channel('estoque-equipe');
   TABLES.forEach(t => channel.on('postgres_changes', {event: '*', schema: 'public', table: t}, p => onRemote(t, p)));
+  channel.on('postgres_changes', {event: '*', schema: 'public', table: 'membros'}, p => onMembro(p));
   channel.subscribe(st => { if (st === 'SUBSCRIBED') live(); else if (st === 'CHANNEL_ERROR' || st === 'TIMED_OUT') offline(); });
 }
 function onRemote(t, p) {
@@ -179,25 +181,109 @@ function onRemote(t, p) {
     toast(`${who}: ${String(n.tipo).toLowerCase()} de ${fmt(n.qtd)} · ${i ? i.nome : n.insumo_id}`);
   }
 }
-function showLogin(msg) {
+function loginView(v) {
+  $$('#login [data-view]').forEach(el => el.hidden = el.dataset.view !== v);
+  $$('#loginTabs button').forEach(b => b.classList.toggle('on', b.dataset.loginView === v));
+  $('#loginTabs').hidden = v === 'pendente';
+  const f = $(`#login [data-view="${v}"] input`); if (f && !('ontouchstart' in window)) setTimeout(() => f.focus(), 50);
+}
+function showLogin(msg, view = 'entrar') {
   $('#login').hidden = false; document.body.classList.add('locked');
-  $('#loginErr').textContent = msg || '';
+  loginView(view);
+  $('#loginErr').textContent = msg || ''; $('#loginErr').classList.remove('ok');
   closeModal(); closeSheet(true);
 }
 function hideLogin() { $('#login').hidden = true; document.body.classList.remove('locked'); }
+const isAdmin = () => !!(membro && membro.admin && membro.status === 'aprovado');
 function renderAccount() {
   const email = me ? me.email : '';
-  $$('[data-acct-email]').forEach(el => el.textContent = email);
+  $$('[data-acct-email]').forEach(el => el.textContent = membro && membro.nome ? `${membro.nome} · ${email}` : email);
   $$('[data-acct]').forEach(el => el.hidden = !me);
+  $$('[data-admin]').forEach(el => el.hidden = !isAdmin());
+  const pend = isAdmin() ? membros.filter(m => m.status === 'pendente').length : 0;
+  [['#navEquipe', false], ['#sheetEquipe', false], ['#tbBadgeMais', true]].forEach(([sel, txt]) => {
+    const el = $(sel); if (!el) return; el.textContent = pend; el.classList.toggle('zero', !pend);
+  });
 }
-async function enter(user) {
-  me = user; hideLogin(); renderAccount(); renderAll();
+// verifica se a conta foi aprovada (tabela "membros")
+async function checkMember() {
+  try {
+    const rows = await q(sb.from('membros').select('*').eq('user_id', me.id));
+    membro = rows[0] || {status: 'pendente', admin: false, nome: '', email: me.email};
+  } catch (e) {
+    const m = String((e && (e.message || '')) + ' ' + (e && e.code || ''));
+    // banco ainda na versão anterior (sem a tabela de membros): todo usuário logado tem acesso
+    if (/membros|42P01|PGRST205|schema cache|does not exist/i.test(m)) membro = {status: 'aprovado', admin: false, nome: '', legacy: true};
+    else membro = readMembroCache() || {status: 'aprovado', admin: false, nome: '', offline: true};
+  }
+  try { localStorage.setItem(KEY + '-membro', JSON.stringify(membro)); } catch (e) {}
+  return membro.status;
+}
+function readMembroCache() { try { const m = JSON.parse(localStorage.getItem(KEY + '-membro')); return m && me && m.user_id === me.id ? m : null; } catch (e) { return null; } }
+async function loadMembros() {
+  if (!isAdmin()) { membros = []; renderAccount(); return; }
+  try { membros = await q(sb.from('membros').select('*').order('criado_em', {ascending: false})); } catch (e) {}
+  renderAccount(); if (page === 'equipe') renderEquipe();
+}
+function onMembro(p) {
+  const n = p && p.new;
+  if (n && me && n.user_id === me.id) {
+    membro = {...membro, ...n};
+    if (membro.status !== 'aprovado') return showPending(membro.status);
+    renderAccount();
+  }
+  if (isAdmin()) {
+    if (p.eventType === 'INSERT' && n && n.status === 'pendente') toast(`Novo pedido de acesso: ${n.nome || n.email}`);
+    loadMembros();
+  }
+}
+function showPending(status) {
+  if (channel) { sb.removeChannel(channel); channel = null; }
+  S = EMPTY(); try { localStorage.removeItem(CACHE); } catch (e) {}
+  showLogin('', 'pendente');
+  const blocked = status === 'bloqueado';
+  $('#pendingBadge').classList.toggle('blocked', blocked);
+  $('#pendingTitle').textContent = blocked ? 'Acesso bloqueado' : 'Aguardando aprovação';
+  $('#pendingText').textContent = blocked
+    ? 'Um administrador bloqueou o acesso desta conta ao estoque. Fale com ele se achar que isso é um engano.'
+    : 'Sua conta foi criada. Agora um administrador precisa liberar o seu acesso. Esta tela abre sozinha assim que você for aprovado.';
+  $('#pendingEmail').textContent = me ? me.email : '';
+  watchAccess();
+}
+// enquanto espera aprovação: escuta mudanças na própria linha e confere a cada 20s
+function watchAccess() {
+  stopWatchAccess();
+  if (!sb || !me) return;
+  accessChannel = sb.channel('meu-acesso')
+    .on('postgres_changes', {event: '*', schema: 'public', table: 'membros', filter: `user_id=eq.${me.id}`}, () => recheck())
+    .subscribe();
+  pendingPoll = setInterval(recheck, 20000);
+}
+function stopWatchAccess() {
+  if (accessChannel) { sb.removeChannel(accessChannel); accessChannel = null; }
+  clearInterval(pendingPoll); pendingPoll = null;
+}
+async function recheck(manual) {
+  if (!me) return;
+  const st = await checkMember();
+  if (st === 'aprovado') { stopWatchAccess(); if (manual !== 'quiet') toast('Acesso liberado!'); enter(me, true); }
+  else if (manual === true) toast(st === 'bloqueado' ? 'O acesso continua bloqueado.' : 'Ainda aguardando aprovação.');
+}
+async function enter(user, checked) {
+  me = user;
+  if (!checked) {
+    const st = await checkMember();
+    if (st !== 'aprovado') return showPending(st);
+  }
+  stopWatchAccess();
+  hideLogin(); renderAccount(); renderAll();
   setStatus('Carregando…', 'busy');
   try {
     await reloadAll();
-    if (TABLES.every(t => !S[t].length)) await offerSeed();
+    if (TABLES.every(t => !S[t].length) && (isAdmin() || membro.legacy)) await offerSeed();
   } catch (e) { toast('Sem conexão com o banco de dados. Mostrando a última versão salva.', null, true); }
   subscribe();
+  loadMembros();
 }
 async function offerSeed() {
   const d = localData();
@@ -213,28 +299,65 @@ async function startCloud() {
   if (session) enter(session.user); else showLogin();
 }
 function loginForm() {
+  $('#login').addEventListener('click', e => {
+    const b = e.target.closest('[data-login-view]'); if (!b) return;
+    loginView(b.dataset.loginView);
+    const em = $('#loginForm').email.value || $('#signupForm').email.value;
+    if (em) { $('#loginForm').email.value = em; $('#signupForm').email.value = em; }
+  });
+  $('#pendingCheck').onclick = async () => { const b = $('#pendingCheck'); b.disabled = true; b.textContent = 'Verificando…'; await recheck(true); b.disabled = false; b.textContent = 'Verificar novamente'; };
+  $('#pendingOut').onclick = () => logout(true);
   const f = $('#loginForm');
   f.onsubmit = async e => {
     e.preventDefault();
     const btn = $('button[type=submit]', f), err = $('#loginErr');
     if (!sb) return startCloud();
-    err.textContent = ''; btn.disabled = true; btn.textContent = 'Entrando…';
+    err.textContent = ''; err.classList.remove('ok'); btn.disabled = true; btn.textContent = 'Entrando…';
     try {
       const {data, error} = await sb.auth.signInWithPassword({email: f.email.value.trim(), password: f.password.value});
       if (error) throw error;
       f.password.value = '';
-      enter(data.user);
+      await enter(data.user);
     } catch (e2) {
       const m = String(e2.message || e2);
-      err.textContent = /invalid login/i.test(m) ? 'E-mail ou senha incorretos.' : /not confirmed/i.test(m) ? 'Este e-mail ainda não foi confirmado. Peça ao administrador para liberar seu acesso.' : 'Não foi possível entrar: ' + errMsg(e2);
+      err.textContent = /invalid login/i.test(m) ? 'E-mail ou senha incorretos.' : /not confirmed/i.test(m) ? 'Confirme o seu e-mail pelo link que enviamos e depois entre aqui.' : 'Não foi possível entrar: ' + errMsg(e2);
     } finally { btn.disabled = false; btn.textContent = 'Entrar'; }
   };
+  const g = $('#signupForm');
+  g.onsubmit = async e => {
+    e.preventDefault();
+    const btn = $('button[type=submit]', g), err = t => $('#signupErr').textContent = t;
+    if (!sb) return startCloud();
+    const nome = g.nome.value.trim(), email = g.email.value.trim();
+    if (g.password.value.length < 6) return err('A senha precisa ter pelo menos 6 caracteres.');
+    if (g.password.value !== g.password2.value) return err('As senhas não são iguais.');
+    err(''); btn.disabled = true; btn.textContent = 'Criando conta…';
+    try {
+      const {data, error} = await sb.auth.signUp({email, password: g.password.value, options: {data: {nome}}});
+      if (error) throw error;
+      g.password.value = g.password2.value = '';
+      if (data.session) { await enter(data.user); return; }
+      // o projeto exige confirmação por e-mail
+      if (data.user && Array.isArray(data.user.identities) && !data.user.identities.length) { err('Este e-mail já tem conta. Use "Entrar".'); return; }
+      showLogin('Conta criada! Confirme o seu e-mail pelo link que enviamos e depois entre aqui.');
+      $('#loginErr').classList.add('ok'); f.email.value = email;
+    } catch (e2) {
+      const m = String(e2.message || e2);
+      err(/already registered|already exists/i.test(m) ? 'Este e-mail já tem conta. Use "Entrar".'
+        : /signups? not allowed|disabled/i.test(m) ? 'A criação de contas está desativada. Fale com o administrador.'
+        : /password/i.test(m) && /weak|short|least/i.test(m) ? 'Senha fraca. Use pelo menos 6 caracteres.'
+        : /invalid.*email|email.*invalid/i.test(m) ? 'E-mail inválido.'
+        : /rate limit/i.test(m) ? 'Muitas tentativas. Aguarde alguns minutos e tente de novo.'
+        : 'Não foi possível criar a conta: ' + errMsg(e2));
+    } finally { btn.disabled = false; btn.textContent = 'Criar conta'; }
+  };
 }
-async function logout() {
-  if (!confirm('Sair da sua conta neste aparelho?')) return;
-  try { localStorage.removeItem(CACHE); } catch (e) {}
+async function logout(force) {
+  if (force !== true && !confirm('Sair da sua conta neste aparelho?')) return;
+  try { localStorage.removeItem(CACHE); localStorage.removeItem(KEY + '-membro'); } catch (e) {}
   if (channel) { sb.removeChannel(channel); channel = null; }
-  S = EMPTY(); me = null; renderAccount(); renderAll(); showLogin();
+  stopWatchAccess();
+  S = EMPTY(); me = null; membro = null; membros = []; renderAccount(); renderAll(); showLogin();
   try { await sb.auth.signOut(); } catch (e) {}
 }
 function modalSenha() {
@@ -355,6 +478,8 @@ function bindSort(table, sort, rerender) {
 /* ---------------- Navegação ---------------- */
 let page = 'painel';
 function go(p, opts = {}) {
+  if (p === 'equipe' && !isAdmin()) p = 'painel';
+  if (p === 'equipe') loadMembros();
   page = p;
   $$('.page').forEach(s => s.classList.toggle('active', s.id === 'page-' + p));
   $$('#sideNav button').forEach(b => b.classList.toggle('active', b.dataset.page === p));
@@ -474,7 +599,7 @@ function closeSheet(silent) {
 }
 $('#sheet').addEventListener('click', e => {
   if (e.target.closest('[data-sheet-close]')) { if (Date.now() - sheetOpenedAt < 400) return; return closeSheet(); }
-  const t = e.target.closest('[data-sheet-page]'); if (t) return go(t.dataset.sheetPage);
+  const t = e.target.closest('[data-sheet-page], [data-page-go]'); if (t) return go(t.dataset.sheetPage || t.dataset.pageGo);
   const l = e.target.closest('#sheetLocais button'); if (l) return go('estoque', {local: l.dataset.local, status: 'TODOS', search: ''});
   if (e.target.closest('[data-act]')) closeSheet();
 });
@@ -502,6 +627,44 @@ const F = {
   ins: {un: 'TODOS', q: '', sort: {k: 'id', d: 1}},
   loc: {tipo: 'TODOS'},
 };
+
+
+/* ---------------- Render: equipe (administradores) ---------------- */
+F.eq = {status: 'TODOS', q: ''};
+function renderEquipe() {
+  const f = F.eq;
+  if ($('#eqSearch') !== document.activeElement) $('#eqSearch').value = f.q;
+  let list = membros.slice();
+  const qq = norm(f.q); if (qq) list = list.filter(m => norm(m.nome + ' ' + m.email).includes(qq));
+  const cnt = st => list.filter(m => m.status === st).length;
+  pills($('#eqStatus'), [{v: 'TODOS', label: 'Todos', count: list.length}, {v: 'pendente', label: 'Pendentes', count: cnt('pendente')}, {v: 'aprovado', label: 'Aprovados', count: cnt('aprovado')}, {v: 'bloqueado', label: 'Bloqueados', count: cnt('bloqueado')}], f.status, v => { f.status = v; renderEquipe(); });
+  if (f.status !== 'TODOS') list = list.filter(m => m.status === f.status);
+  const order = {pendente: 0, aprovado: 1, bloqueado: 2};
+  list.sort((a, b) => order[a.status] - order[b.status] || String(b.criado_em).localeCompare(String(a.criado_em)));
+  const t = $('#eqTable');
+  t.innerHTML = thead([{t: 'Nome'}, {t: 'E-mail', cls: 'hide-sm'}, {t: 'Status', cls: 'hide-sm'}, {t: 'Função', cls: 'hide-sm'}, {t: 'Desde', cls: 'hide-sm'}, {t: ''}]) + '<tbody>' + (list.map(m => {
+    const self = me && m.user_id === me.id, acts = [];
+    if (m.status === 'pendente') acts.push(`<button class="mini-btn go" data-m="aprovar">Aprovar</button>`, `<button class="mini-btn stop" data-m="bloquear">Recusar</button>`);
+    if (m.status === 'aprovado' && !self) acts.push(m.admin ? `<button class="mini-btn" data-m="rebaixar">Tirar admin</button>` : `<button class="mini-btn" data-m="promover">Tornar admin</button>`, `<button class="mini-btn stop" data-m="bloquear">Bloquear</button>`);
+    if (m.status === 'bloqueado') acts.push(`<button class="mini-btn" data-m="aprovar">Desbloquear</button>`);
+    return `<tr data-uid="${esc(m.user_id)}"><td class="name">${esc(m.nome || '—')}${self ? ' <span class="muted" style="font-size:11px">(você)</span>' : ''}<div class="eq-mail">${esc(m.email)}</div><div class="eq-mail"><span class="pill ${m.status.toUpperCase()}" style="margin-top:6px">${m.status.toUpperCase()}${m.admin ? ' · ADMIN' : ''}</span></div></td><td class="muted hide-sm">${esc(m.email)}</td><td class="hide-sm"><span class="pill ${m.status.toUpperCase()}">${m.status.toUpperCase()}</span></td><td class="hide-sm">${m.admin ? '<span class="role">ADMIN</span>' : '<span class="muted">Membro</span>'}</td><td class="muted hide-sm num">${m.criado_em ? fmtDate(String(m.criado_em).slice(0, 10)) : '—'}</td><td><div class="member-actions">${acts.join('') || '<span class="muted" style="font-size:12px">—</span>'}</div></td></tr>`;
+  }).join('') || '<tr><td colspan="6" class="empty">Ninguém por aqui.</td></tr>') + '</tbody>';
+  $$('tbody tr[data-uid]', t).forEach(tr => tr.onclick = async e => {
+    const b = e.target.closest('[data-m]'); if (!b) return;
+    const m = membros.find(x => x.user_id === tr.dataset.uid); if (!m) return;
+    const who = m.nome || m.email, act = b.dataset.m;
+    const patch = {aprovar: {status: 'aprovado'}, bloquear: {status: 'bloqueado', admin: false}, promover: {admin: true}, rebaixar: {admin: false}}[act];
+    const ask = {bloquear: m.status === 'pendente' ? `Recusar o pedido de ${who}?` : `Bloquear o acesso de ${who}? A pessoa sai do estoque na hora.`, promover: `Tornar ${who} administrador? Essa pessoa poderá aprovar e bloquear outras contas.`, rebaixar: `Tirar a função de administrador de ${who}?`}[act];
+    if (ask && !confirm(ask)) return;
+    b.disabled = true;
+    try {
+      await q(sb.from('membros').update(patch).eq('user_id', m.user_id));
+      toast({aprovar: `${who} agora tem acesso`, bloquear: `${who} foi bloqueado`, promover: `${who} agora é administrador`, rebaixar: `${who} não é mais administrador`}[act]);
+      await loadMembros();
+    } catch (err) { b.disabled = false; toast('Não foi possível alterar: ' + errMsg(err), null, true); }
+  });
+  $('#eqFoot').textContent = `${membros.length} ${membros.length === 1 ? 'conta' : 'contas'} · ${membros.filter(m => m.status === 'pendente').length} aguardando aprovação`;
+}
 
 /* ---------------- Render: sidebar ---------------- */
 function renderSide(rows) {
@@ -689,6 +852,7 @@ function renderAll() {
   if (page === 'movimentacoes') renderMovs();
   if (page === 'insumos') renderInsumos(rows);
   if (page === 'locais') renderLocais(rows);
+  if (page === 'equipe') renderEquipe();
 }
 
 /* ---------------- Modais ---------------- */
@@ -712,7 +876,7 @@ function parseIns(v) {
 
 function modalMov(index = null, preset = {}) {
   const editing = index !== null && index >= 0;
-  const m = editing ? {...S.movs[index]} : {data: todayISO(), tipo: preset.tipo || 'SAÍDA', local: preset.local || F.est.local || '', id: preset.id || '', qtd: '', resp: localStorage.getItem(KEY + '-resp') || (me ? me.email.split('@')[0].toUpperCase() : ''), obs: '', destino: ''};
+  const m = editing ? {...S.movs[index]} : {data: todayISO(), tipo: preset.tipo || 'SAÍDA', local: preset.local || F.est.local || '', id: preset.id || '', qtd: '', resp: localStorage.getItem(KEY + '-resp') || (membro && membro.nome ? membro.nome.toUpperCase() : me ? me.email.split('@')[0].toUpperCase() : ''), obs: '', destino: ''};
   const ins = m.id ? insById().get(m.id) : null;
   openModal(head(editing ? 'Editar' : 'Nova', 'Movimentação') + `
   <form class="form" id="fMov" autocomplete="off">
@@ -1001,6 +1165,7 @@ $('#estView').onclick = e => { const b = e.target.closest('button'); if (b) { F.
 $('#movLocal').onchange = e => { F.mov.local = e.target.value; renderAll(); };
 $('#movSearch').oninput = e => { F.mov.q = e.target.value; renderAll(); };
 $('#insSearch').oninput = e => { F.ins.q = e.target.value; renderAll(); };
+$('#eqSearch').oninput = e => { F.eq.q = e.target.value; renderEquipe(); };
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && $('#overlay').classList.contains('open')) return closeModal();
   if (e.key === 'Escape' && $('#sheet').classList.contains('open')) return closeSheet();
@@ -1011,14 +1176,18 @@ document.addEventListener('keydown', e => {
 });
 window.addEventListener('storage', e => { if (!CLOUD && e.key === KEY) { S = load(); renderAll(); } });
 // ao voltar para o app (iPhone suspende o app em segundo plano), busca as novidades
-document.addEventListener('visibilitychange', () => { if (CLOUD && me && document.visibilityState === 'visible') reloadAll().catch(() => {}); });
+document.addEventListener('visibilitychange', () => {
+  if (!CLOUD || !me || document.visibilityState !== 'visible') return;
+  if (pendingPoll) return recheck('quiet');
+  checkMember().then(st => { if (st !== 'aprovado') showPending(st); else { reloadAll().catch(() => {}); loadMembros(); } });
+});
 window.addEventListener('online', () => { if (CLOUD && me) reloadAll().catch(() => {}); });
 window.addEventListener('offline', () => { if (CLOUD) offline(); });
 
-const PAGES = ['painel', 'estoque', 'movimentacoes', 'insumos', 'locais', 'guia'];
+const PAGES = ['painel', 'estoque', 'movimentacoes', 'insumos', 'locais', 'guia', 'equipe'];
 window.addEventListener('hashchange', () => { const h = location.hash.slice(1); if (PAGES.includes(h) && h !== page) go(h); });
 const start = (location.hash || '').slice(1);
-if (['painel', 'estoque', 'movimentacoes', 'insumos', 'locais', 'guia'].includes(start)) page = start;
+if (PAGES.includes(start) && start !== 'equipe') page = start;
 if (CLOUD) { showLogin(); loginForm(); }
 go(page);
 if (CLOUD) startCloud();

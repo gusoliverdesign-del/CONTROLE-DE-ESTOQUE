@@ -36,10 +36,16 @@ Os dados ficam num banco de dados compartilhado no [Supabase](https://supabase.c
 
 ### Configuração (uma vez)
 
-1. No Supabase, abra **SQL Editor**, cole o conteúdo de [`supabase/schema.sql`](supabase/schema.sql) e clique em **Run**.
-2. Em **Authentication → Sign In / Providers**, **desative** "Allow new users to sign up". Assim só entra quem o administrador cadastrar.
-3. Em **Authentication → Users → Add user → Create new user**, cadastre cada pessoa com e-mail e senha, marcando **Auto Confirm User**.
-4. No primeiro acesso, a plataforma oferece enviar os dados atuais (os da planilha) para o banco.
+1. No Supabase, abra **SQL Editor**, cole o conteúdo de [`supabase/schema.sql`](supabase/schema.sql) e clique em **Run**. Rode de novo sempre que o arquivo for atualizado.
+2. Em **Authentication → Sign In / Providers**, deixe **ligado** "Allow new users to sign up" e, em **Email**, **desligue** "Confirm email".
+3. A primeira conta criada vira **administradora** automaticamente.
+
+### Contas e aprovação
+
+- Qualquer pessoa pode tocar em **Criar conta**, mas entra como **pendente** e não vê nada do estoque.
+- Administradores aprovam, recusam ou bloqueiam contas em **Equipe**, e recebem um aviso quando chega um pedido novo.
+- Quando a conta é aprovada, a tela da pessoa libera sozinha. Quando é bloqueada, ela sai do estoque na hora.
+- As regras ficam no próprio banco (RLS), então valem mesmo para quem tentar acessar fora do site.
 
 A URL do projeto e a chave *publishable* ficam em `config.js`. Essa chave é pública por design: o acesso aos dados é protegido pelo login e pelas regras de segurança (RLS) do `schema.sql`. Se os valores de `config.js` forem apagados, a plataforma volta a funcionar só no navegador, sem equipe.
 

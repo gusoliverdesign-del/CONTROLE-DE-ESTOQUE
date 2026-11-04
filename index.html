@@ -353,6 +353,33 @@ body[data-sync=busy] .status-dot{background:#ffc94d;box-shadow:0 0 12px #ffc94d7
 body[data-sync=off] .status-dot{background:var(--red);box-shadow:0 0 12px #ff503b70}
 @keyframes livedot{0%,100%{box-shadow:0 0 0 0 #d5ff5670}60%{box-shadow:0 0 0 6px #d5ff5600}}
 
+.login-card form p,.login-card #pendingView p{margin:0 0 24px;color:#a9a8a4;font-size:15px}
+.login-tabs{display:flex;width:100%;margin:22px 0 22px}
+.login-tabs button{flex:1;padding:9px 14px;font-size:13px}
+.login-tabs[hidden]{display:none}
+.login-card [hidden]{display:none!important}
+.login-err{color:#ff7a68;font-size:13px;margin:-6px 0 14px}
+.login-err:empty{display:none}
+.login-err.ok{color:var(--accent)}
+.linkbtn{background:none;border:0;padding:0;color:var(--text);font:inherit;text-decoration:underline;text-decoration-color:#555;text-underline-offset:3px}
+.pending-badge{display:inline-flex;align-items:center;gap:9px;margin:26px 0 16px;padding:8px 14px;border-radius:99px;background:#ffc94d1a;color:#ffd77a;font-size:13px;font-weight:500}
+.pending-badge .status-dot{background:#ffc94d;box-shadow:0 0 12px #ffc94d80;animation:livedot 2s ease-in-out infinite}
+.pending-badge.blocked{background:#ff503b1f;color:#ff7a68}
+.pending-badge.blocked .status-dot{background:var(--red);animation:none}
+.pending-email{font-family:var(--mono);font-size:12.5px!important;color:#8a8a86!important;margin-top:-12px!important}
+.role{display:inline-block;padding:2px 8px;border-radius:99px;font:500 10.5px/1.5 var(--mono);letter-spacing:.06em;background:#d5ff5614;color:var(--accent)}
+.pill.PENDENTE{background:#ffc94d1a;color:#ffd77a}
+.pill.APROVADO{background:#d5ff5614;color:var(--accent)}
+.pill.BLOQUEADO{background:#ff503b1f;color:#ff7a68}
+.mini-btn{border:1px solid #444;background:transparent;color:#ddd;border-radius:99px;padding:6px 12px;font-size:12px;white-space:nowrap;transition:all .2s}
+.mini-btn:hover{border-color:#999;color:#fff}
+.mini-btn.go{background:var(--accent);border-color:var(--accent);color:#111}
+.mini-btn.stop{border-color:#ff503b70;color:#ff7a68}
+.member-actions{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}
+[data-admin][hidden]{display:none!important}
+.eq-mail{display:none;font:400 11.5px var(--mono);color:#777;margin-top:2px}
+@media(max-width:820px){.eq-mail{display:block}.member-actions{flex-direction:column;align-items:flex-end}}
+
 /* ---------- Responsive ---------- */
 @media(max-width:1500px){.hide-md{display:none}}
 @media(max-width:1180px){.kpis{grid-template-columns:repeat(3,1fr)}.grid2{grid-template-columns:1fr}}
@@ -419,6 +446,7 @@ body[data-sync=off] .status-dot{background:var(--red);box-shadow:0 0 12px #ff503
       <button data-page="movimentacoes">Movimentações</button>
       <button data-page="insumos">Insumos</button>
       <button data-page="locais">Salas e antessalas</button>
+      <button data-page="equipe" data-admin hidden>Equipe <span class="badge zero" id="navEquipe">0</span></button>
       <button data-page="guia">Como usar</button>
     </nav>
     <div class="side-sep"></div>
@@ -525,6 +553,16 @@ body[data-sync=off] .status-dot{background:var(--red);box-shadow:0 0 12px #ff503
     <div class="loc-grid" id="locGrid"></div>
   </section>
 
+  <!-- EQUIPE -->
+  <section class="page" id="page-equipe">
+    <div class="page-head">
+      <div><span class="eyebrow">Administração</span><h1>Equipe</h1><p>Quem cria conta aparece aqui como pendente. Aprove para liberar o acesso ao estoque, ou bloqueie quem não deve mais acessar.</p></div>
+    </div>
+    <div class="topbar"><div class="filters" id="eqStatus"></div><input class="search" id="eqSearch" type="search" placeholder="Buscar nome ou e-mail"></div>
+    <div class="table-wrap"><table id="eqTable"></table></div>
+    <div class="table-foot"><span id="eqFoot"></span></div>
+  </section>
+
   <!-- GUIA -->
   <section class="page" id="page-guia">
     <div class="page-head">
@@ -536,7 +574,7 @@ body[data-sync=off] .status-dot{background:var(--red);box-shadow:0 0 12px #ff503
       <div class="step"><span class="n">03</span><h3>Registre movimentações</h3><p><b>Entrada</b> soma no local. <b>Saída</b> subtrai do local. <b>Transferência</b> tira do local de origem e soma no destino.</p></div>
       <div class="step"><span class="n">04</span><h3>Acompanhe os alertas</h3><p>O <b>Painel</b> mostra o que está igual ou abaixo do mínimo. Clique no alerta para ir direto ao item.</p></div>
       <div class="step"><span class="n">05</span><h3>Faça a contagem física</h3><p>Ao editar um item do estoque, informe a <b>contagem física</b>: o sistema ajusta o saldo sem apagar o histórico.</p></div>
-      <div class="step"><span class="n">06</span><h3>Trabalhe em equipe</h3><p>Todos da equipe veem os mesmos dados, atualizados <b>ao vivo</b>. Cada movimentação guarda quem a registrou. Use <b>Exportar planilha</b> para ter uma cópia em Excel.</p></div>
+      <div class="step"><span class="n">06</span><h3>Trabalhe em equipe</h3><p>Cada pessoa cria a própria conta e um administrador aprova em <b>Equipe</b>. Todos veem os mesmos dados, <b>ao vivo</b>, e cada movimentação guarda quem a registrou.</p></div>
     </div>
     <div class="card rules" style="margin-top:8px">
       <div class="card-head"><h2>Regras de status</h2></div>
@@ -555,7 +593,7 @@ body[data-sync=off] .status-dot{background:var(--red);box-shadow:0 0 12px #ff503
     <button class="tb-btn active" data-tab="painel" role="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7.5" height="9" rx="2"/><rect x="13.5" y="3" width="7.5" height="5.5" rx="2"/><rect x="13.5" y="11.5" width="7.5" height="9.5" rx="2"/><rect x="3" y="15" width="7.5" height="6" rx="2"/></svg><span>Painel</span></button>
     <button class="tb-btn" data-tab="estoque" role="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8 12 3 3 8v8l9 5 9-5Z"/><path d="m3 8 9 5 9-5"/><path d="M12 13v8"/></svg><span>Estoque</span><i class="tb-badge zero" id="tbBadge"></i></button>
     <button class="tb-btn" data-tab="movimentacoes" role="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M7 4v16"/><path d="m3 8 4-4 4 4"/><path d="M17 20V4"/><path d="m21 16-4 4-4-4"/></svg><span>Movimentos</span></button>
-    <button class="tb-btn" data-tab="mais" role="tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="12" r="1.6" fill="currentColor"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><circle cx="19" cy="12" r="1.6" fill="currentColor"/></svg><span>Mais</span></button>
+    <button class="tb-btn" data-tab="mais" role="tab"><i class="tb-badge zero" id="tbBadgeMais"></i><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="12" r="1.6" fill="currentColor"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><circle cx="19" cy="12" r="1.6" fill="currentColor"/></svg><span>Mais</span></button>
   </div>
   <button class="tb-fab glass" id="tbFab" type="button" aria-label="Registrar movimentação"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
 </nav>
@@ -577,6 +615,7 @@ body[data-sync=off] .status-dot{background:var(--red);box-shadow:0 0 12px #ff503
     </div></section>
     <section class="sheet-sec" data-acct hidden><span class="side-label">Conta</span><div class="sheet-list">
       <button type="button" disabled style="opacity:1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg><span class="lname" data-acct-email></span></button>
+      <button data-page-go="equipe" data-admin hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18.5 20a6.5 6.5 0 0 0-3-5.5"/></svg><span class="lname">Equipe e acessos</span><span class="badge zero" id="sheetEquipe">0</span><span class="chev">›</span></button>
       <button data-act="refresh"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg><span class="lname">Atualizar dados agora</span><span class="chev">›</span></button>
       <button data-act="password"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"/><path d="m10.8 12.2 9.2-9.2M17 6l3 3M15 8l2 2"/></svg><span class="lname">Alterar senha</span><span class="chev">›</span></button>
       <button data-act="logout" style="color:#ff7a68"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"/><path d="M10 17l-5-5 5-5"/><path d="M5 12h11"/></svg><span class="lname">Sair</span></button>
@@ -588,17 +627,37 @@ body[data-sync=off] .status-dot{background:var(--red);box-shadow:0 0 12px #ff503
 <div class="overlay" id="overlay" role="dialog" aria-modal="true"><div class="modal" id="modal"></div></div>
 
 <div class="login" id="login" hidden>
-  <form class="login-card" id="loginForm" autocomplete="on">
+  <div class="login-card">
     <div class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6"/><path d="M10 3v6.5L4.6 18.2A2 2 0 0 0 6.3 21h11.4a2 2 0 0 0 1.7-2.8L14 9.5V3"/><path d="M7.5 15h9"/></svg></div>
     <span class="eyebrow">Laboratório Pasteur</span>
     <h1>Controle de<br>Estoque</h1>
-    <p>Entre com o e-mail e a senha cadastrados para a sua equipe.</p>
-    <label>E-mail<input name="email" type="email" autocomplete="username" inputmode="email" required></label>
-    <label>Senha<input name="password" type="password" autocomplete="current-password" required></label>
-    <div id="loginErr"></div>
-    <button class="btn accent" type="submit">Entrar</button>
-    <small>Esqueceu a senha ou não tem acesso? Fale com o administrador.</small>
-  </form>
+    <div class="view-toggle login-tabs" id="loginTabs"><button type="button" data-login-view="entrar" class="on">Entrar</button><button type="button" data-login-view="criar">Criar conta</button></div>
+    <form id="loginForm" data-view="entrar" autocomplete="on">
+      <p>Entre com o seu e-mail e senha.</p>
+      <label>E-mail<input name="email" type="email" autocomplete="username" inputmode="email" required></label>
+      <label>Senha<input name="password" type="password" autocomplete="current-password" required></label>
+      <div class="login-err" id="loginErr"></div>
+      <button class="btn accent" type="submit">Entrar</button>
+      <small>Ainda não tem conta? <button type="button" class="linkbtn" data-login-view="criar">Criar conta</button></small>
+    </form>
+    <form id="signupForm" data-view="criar" autocomplete="on" hidden>
+      <p>Crie sua conta. Um administrador vai liberar o seu acesso.</p>
+      <label>Seu nome<input name="nome" autocomplete="name" required maxlength="60" placeholder="Como a equipe te conhece"></label>
+      <label>E-mail<input name="email" type="email" autocomplete="username" inputmode="email" required></label>
+      <label>Senha<input name="password" type="password" autocomplete="new-password" minlength="6" required placeholder="Mínimo de 6 caracteres"></label>
+      <label>Repita a senha<input name="password2" type="password" autocomplete="new-password" minlength="6" required></label>
+      <div class="login-err" id="signupErr"></div>
+      <button class="btn accent" type="submit">Criar conta</button>
+      <small>Já tem conta? <button type="button" class="linkbtn" data-login-view="entrar">Entrar</button></small>
+    </form>
+    <div id="pendingView" data-view="pendente" hidden>
+      <div class="pending-badge" id="pendingBadge"><span class="status-dot"></span><span id="pendingTitle">Aguardando aprovação</span></div>
+      <p id="pendingText"></p>
+      <p class="pending-email" id="pendingEmail"></p>
+      <button class="btn accent" type="button" id="pendingCheck">Verificar novamente</button>
+      <small><button type="button" class="linkbtn" id="pendingOut">Sair e usar outra conta</button></small>
+    </div>
+  </div>
 </div>
 <div class="toasts" id="toasts"></div>
 <input type="file" id="fileInput" accept=".xlsx,.xls,.json" hidden>
