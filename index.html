@@ -325,6 +325,34 @@ tr:hover .row-actions{opacity:1}
 .sheet-status{display:flex;align-items:center;gap:9px;margin:16px 4px 0;color:#7d7d79;font-size:12px}
 @media(prefers-reduced-motion:reduce){.tb-ind,.sheet,.tabbar,.modal{transition-duration:.01s!important}.tb-btn.pop svg,.sheet-tile,.sheet-sec{animation:none!important;opacity:1;transform:none}}
 
+/* ---------- Login e conta ---------- */
+.login{position:fixed;inset:0;z-index:95;background:var(--bg);display:flex;align-items:center;justify-content:center;padding:calc(24px + env(safe-area-inset-top)) 20px calc(24px + env(safe-area-inset-bottom));overflow:auto}
+.login[hidden]{display:none}
+.login:before{content:'';position:absolute;inset:0;background:radial-gradient(40% 35% at 20% 15%,#d5ff5618,transparent 70%),radial-gradient(45% 40% at 85% 90%,#ff503b14,transparent 70%);pointer-events:none}
+.login-card{position:relative;width:100%;max-width:400px;animation:fadein .5s ease both}
+.login-card .brand-mark{width:60px;height:60px;border-radius:14px;margin-bottom:26px}
+.login-card .brand-mark svg{width:32px;height:32px}
+.login-card h1{font:500 clamp(34px,8vw,44px)/1.04 var(--display);letter-spacing:-.045em;margin:12px 0 10px}
+.login-card p{margin:0 0 28px;color:#a9a8a4;font-size:15px}
+.login-card label{display:block;margin:0 0 20px;font:400 10.5px/1.4 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:#8a8a86}
+.login-card input{display:block;width:100%;margin-top:9px;padding:14px;border:0;border-bottom:1px solid #4a4a4a;border-radius:6px 6px 0 0;background:var(--field);color:var(--text);font:400 16px/1.4 'DM Sans',sans-serif;letter-spacing:0;text-transform:none;outline:none;transition:border-color .25s,background .25s}
+.login-card input:focus{border-color:var(--accent);background:#202020}
+.login-card .btn{width:100%;justify-content:center;padding:15px;font-size:15px;margin-top:6px}
+.login-card .btn:disabled{opacity:.6;transform:none}
+.login-card small{display:block;margin-top:18px;color:#6f6f6b;font-size:12.5px;text-align:center}
+#loginErr{color:#ff7a68;font-size:13px;margin:-6px 0 14px;min-height:0}
+#loginErr:empty{display:none}
+body.locked{overflow:hidden}
+body.locked .tabbar{display:none!important}
+.acct{display:flex;flex-direction:column;gap:6px;padding:12px 0 2px}
+.acct[hidden]{display:none}
+.acct-email{color:#cfcecb;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.acct .row{display:flex;gap:14px}
+body[data-sync=live] .status-dot{animation:livedot 2.4s ease-in-out infinite}
+body[data-sync=busy] .status-dot{background:#ffc94d;box-shadow:0 0 12px #ffc94d70}
+body[data-sync=off] .status-dot{background:var(--red);box-shadow:0 0 12px #ff503b70}
+@keyframes livedot{0%,100%{box-shadow:0 0 0 0 #d5ff5670}60%{box-shadow:0 0 0 6px #d5ff5600}}
+
 /* ---------- Responsive ---------- */
 @media(max-width:1500px){.hide-md{display:none}}
 @media(max-width:1180px){.kpis{grid-template-columns:repeat(3,1fr)}.grid2{grid-template-columns:1fr}}
@@ -400,6 +428,7 @@ tr:hover .row-actions{opacity:1}
   <div class="side-bottom">
     <div class="side-sep" style="margin:0 0 6px"></div>
     <p class="avail"><span class="status-dot"></span><span id="saveStatus">Dados salvos neste navegador</span></p>
+    <div class="acct" data-acct hidden><span class="acct-email" data-acct-email></span><div class="row"><button class="side-link" data-act="password">Alterar senha</button><button class="side-link" data-act="logout">Sair</button></div></div>
     <button class="side-link" data-act="export-xlsx">Exportar planilha Excel ↗</button>
     <button class="side-link" data-act="import">Importar planilha (.xlsx) ou backup</button>
     <button class="side-link" data-act="export-json">Baixar backup (.json)</button>
@@ -507,7 +536,7 @@ tr:hover .row-actions{opacity:1}
       <div class="step"><span class="n">03</span><h3>Registre movimentações</h3><p><b>Entrada</b> soma no local. <b>Saída</b> subtrai do local. <b>Transferência</b> tira do local de origem e soma no destino.</p></div>
       <div class="step"><span class="n">04</span><h3>Acompanhe os alertas</h3><p>O <b>Painel</b> mostra o que está igual ou abaixo do mínimo. Clique no alerta para ir direto ao item.</p></div>
       <div class="step"><span class="n">05</span><h3>Faça a contagem física</h3><p>Ao editar um item do estoque, informe a <b>contagem física</b>: o sistema ajusta o saldo sem apagar o histórico.</p></div>
-      <div class="step"><span class="n">06</span><h3>Exporte e faça backup</h3><p>Os dados ficam salvos neste navegador. Use <b>Exportar planilha</b> ou <b>Baixar backup</b> com frequência e importe em outro computador.</p></div>
+      <div class="step"><span class="n">06</span><h3>Trabalhe em equipe</h3><p>Todos da equipe veem os mesmos dados, atualizados <b>ao vivo</b>. Cada movimentação guarda quem a registrou. Use <b>Exportar planilha</b> para ter uma cópia em Excel.</p></div>
     </div>
     <div class="card rules" style="margin-top:8px">
       <div class="card-head"><h2>Regras de status</h2></div>
@@ -546,15 +575,37 @@ tr:hover .row-actions{opacity:1}
       <button data-act="import"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4"/><path d="m7 9 5-5 5 5"/><path d="M5 20h14"/></svg><span class="lname">Importar planilha ou backup</span><span class="chev">›</span></button>
       <button data-act="export-json"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h11l3 3v13a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2Z"/><path d="M8 3v5h7"/><rect x="8" y="13" width="8" height="5" rx="1"/></svg><span class="lname">Baixar backup (.json)</span><span class="chev">›</span></button>
     </div></section>
+    <section class="sheet-sec" data-acct hidden><span class="side-label">Conta</span><div class="sheet-list">
+      <button type="button" disabled style="opacity:1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg><span class="lname" data-acct-email></span></button>
+      <button data-act="refresh"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg><span class="lname">Atualizar dados agora</span><span class="chev">›</span></button>
+      <button data-act="password"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"/><path d="m10.8 12.2 9.2-9.2M17 6l3 3M15 8l2 2"/></svg><span class="lname">Alterar senha</span><span class="chev">›</span></button>
+      <button data-act="logout" style="color:#ff7a68"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3"/><path d="M10 17l-5-5 5-5"/><path d="M5 12h11"/></svg><span class="lname">Sair</span></button>
+    </div></section>
     <p class="sheet-status"><span class="status-dot"></span><span id="sheetSave">Dados salvos neste aparelho</span></p>
   </div>
 </div>
 
 <div class="overlay" id="overlay" role="dialog" aria-modal="true"><div class="modal" id="modal"></div></div>
+
+<div class="login" id="login" hidden>
+  <form class="login-card" id="loginForm" autocomplete="on">
+    <div class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6"/><path d="M10 3v6.5L4.6 18.2A2 2 0 0 0 6.3 21h11.4a2 2 0 0 0 1.7-2.8L14 9.5V3"/><path d="M7.5 15h9"/></svg></div>
+    <span class="eyebrow">Laboratório Pasteur</span>
+    <h1>Controle de<br>Estoque</h1>
+    <p>Entre com o e-mail e a senha cadastrados para a sua equipe.</p>
+    <label>E-mail<input name="email" type="email" autocomplete="username" inputmode="email" required></label>
+    <label>Senha<input name="password" type="password" autocomplete="current-password" required></label>
+    <div id="loginErr"></div>
+    <button class="btn accent" type="submit">Entrar</button>
+    <small>Esqueceu a senha ou não tem acesso? Fale com o administrador.</small>
+  </form>
+</div>
 <div class="toasts" id="toasts"></div>
 <input type="file" id="fileInput" accept=".xlsx,.xls,.json" hidden>
 
 <script src="xlsx.full.min.js"></script>
+<script src="supabase.min.js"></script>
+<script src="config.js"></script>
 <script src="seed.js"></script>
 <script src="app.js"></script>
 </body>

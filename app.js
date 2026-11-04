@@ -27,27 +27,235 @@ const ICON = {
 };
 
 /* ---------------- Estado ---------------- */
+const CFG = window.SUPABASE_CONFIG || {};
+const CLOUD = !!(CFG.url && CFG.key);
+const CACHE = KEY + '-nuvem';
+const EMPTY = () => ({insumos: [], locais: [], estoque: [], movs: []});
+const hhmm = () => new Date().toLocaleTimeString('pt-BR', {hour: '2-digit', minute: '2-digit'});
 let S = load();
 function seedState() {
   const s = clone(window.SEED);
-  s.movs.forEach(m => m.uid = uid());
-  return s;
+  s.movs.forEach((m, i) => m.uid = 'seed-' + (i + 1));
+  return dedupe(s);
 }
-function load() {
-  try { const raw = localStorage.getItem(KEY); if (raw) { const s = JSON.parse(raw); if (s && s.insumos && s.estoque) return s; } } catch (e) {}
-  return seedState();
+function dedupe(st) {
+  const seen = new Map(), out = [];
+  for (const e of st.estoque || []) {
+    const k = e.local + '|' + e.id, prev = seen.get(k);
+    if (!prev) { const c = {...e}; seen.set(k, c); out.push(c); continue; }
+    prev.ini = (Number(prev.ini) || 0) + (Number(e.ini) || 0);
+    const mins = [prev.min, e.min].filter(v => v !== null && v !== undefined && v !== '').map(Number);
+    prev.min = mins.length ? Math.max(...mins) : null;
+  }
+  st.estoque = out;
+  return st;
+}
+function readKey(k) {
+  try { const raw = localStorage.getItem(k); if (raw) { const s = JSON.parse(raw); if (s && s.insumos && s.estoque) return dedupe(s); } } catch (e) {}
+  return null;
+}
+function load() { return CLOUD ? (readKey(CACHE) || EMPTY()) : (readKey(KEY) || seedState()); }
+// dados que este aparelho tinha antes da nuvem (usados no primeiro envio)
+const localData = () => readKey(KEY) || seedState();
+function setStatus(t, state) {
+  ['#saveStatus', '#sheetSave'].forEach(sel => { const el = $(sel); if (el) el.textContent = t; });
+  document.body.dataset.sync = state || '';
 }
 let saveTimer;
 function save() {
-  try { localStorage.setItem(KEY, JSON.stringify(S)); $('#saveStatus').textContent = $('#sheetSave').textContent = 'Salvo às ' + new Date().toLocaleTimeString('pt-BR', {hour: '2-digit', minute: '2-digit'}); }
-  catch (e) { $('#saveStatus').textContent = 'Não foi possível salvar — faça um backup'; }
-  clearTimeout(saveTimer); saveTimer = setTimeout(() => $('#saveStatus').textContent = 'Dados salvos neste navegador', 6000);
+  try { localStorage.setItem(CLOUD ? CACHE : KEY, JSON.stringify(S)); }
+  catch (e) { if (!CLOUD) return setStatus('Não foi possível salvar — faça um backup', 'off'); }
+  if (CLOUD) return;
+  setStatus('Salvo às ' + hhmm());
+  clearTimeout(saveTimer); saveTimer = setTimeout(() => setStatus('Dados salvos neste navegador'), 6000);
 }
 let undoStack = [];
 function commit(msg, fn) {
+  const before = clone(S);
   undoStack.push(JSON.stringify(S)); if (undoStack.length > 20) undoStack.shift();
   fn(); save(); renderAll();
-  toast(msg, () => { S = JSON.parse(undoStack.pop()); save(); renderAll(); toast('Ação desfeita'); });
+  const undo = () => {
+    const cur = clone(S); S = JSON.parse(undoStack.pop()); save(); renderAll();
+    sync(cur, S).then(ok => { if (ok) toast('Ação desfeita'); });
+  };
+  if (!CLOUD) return toast(msg, undo);
+  sync(before, S).then(ok => { if (ok) toast(msg, undo); else undoStack.pop(); });
+}
+
+/* ---------------- Nuvem (Supabase): banco compartilhado pela equipe ---------------- */
+let sb = null, me = null, pushing = 0, reloadWanted = false, channel = null, reloadT = null;
+const numOrNull = v => v === null || v === undefined || v === '' ? null : Number(v);
+const T = {
+  insumos: {pk: ['id'], key: r => r.id,
+    to: i => ({id: i.id, nome: i.nome, un: i.un || ''}),
+    from: r => ({id: r.id, nome: r.nome, un: r.un || ''})},
+  locais: {pk: ['nome'], key: r => r.nome,
+    to: (l, i) => ({nome: l.nome, tipo: l.tipo || 'Sala', ordem: i}),
+    from: r => ({nome: r.nome, tipo: r.tipo})},
+  estoque: {pk: ['local', 'insumo_id'], key: r => r.local + '|' + r.insumo_id,
+    to: e => ({local: e.local, insumo_id: e.id, inicial: Number(e.ini) || 0, minimo: numOrNull(e.min)}),
+    from: r => ({local: r.local, id: r.insumo_id, ini: Number(r.inicial) || 0, min: numOrNull(r.minimo)})},
+  movs: {pk: ['uid'], key: r => r.uid,
+    to: m => ({uid: m.uid, data: m.data, local: m.local, insumo_id: m.id, tipo: m.tipo, qtd: Number(m.qtd), resp: m.resp || '', obs: m.obs || '', destino: m.destino || ''}),
+    from: r => ({uid: r.uid, data: r.data, local: r.local, id: r.insumo_id, tipo: r.tipo, qtd: Number(r.qtd), resp: r.resp || '', obs: r.obs || '', destino: r.destino || '', por: r.criado_por || ''})},
+};
+const TABLES = Object.keys(T);
+async function q(req) { const {data, error} = await req; if (error) throw error; return data; }
+function errMsg(e) {
+  const m = String((e && (e.message || e.error_description)) || e || '');
+  if (/fetch|network|load failed/i.test(m)) return 'sem conexão com a internet';
+  if (/jwt|token/i.test(m)) return 'sua sessão expirou, entre novamente';
+  if (/permission|policy|row-level/i.test(m)) return 'sem permissão (você está logado?)';
+  return m || 'erro desconhecido';
+}
+function live() { if (!pushing) setStatus('Sincronizado · ao vivo', 'live'); }
+function offline() { setStatus('Sem conexão — mostrando a última versão', 'off'); }
+async function fetchTable(name) {
+  const rows = [];
+  for (let from = 0; ; from += 1000) {
+    const page = await q(sb.from(name).select('*').range(from, from + 999));
+    rows.push(...page); if (page.length < 1000) break;
+  }
+  if (name === 'locais') rows.sort((a, b) => a.ordem - b.ordem || a.nome.localeCompare(b.nome));
+  if (name === 'insumos') rows.sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
+  if (name === 'estoque') rows.sort((a, b) => a.local.localeCompare(b.local) || a.insumo_id.localeCompare(b.insumo_id));
+  if (name === 'movs') rows.sort((a, b) => (a.data + (a.criado_em || '')).localeCompare(b.data + (b.criado_em || '')));
+  return rows.map(T[name].from);
+}
+async function reloadAll() {
+  if (!sb || !me) return;
+  if (pushing) { reloadWanted = true; return; }
+  try {
+    const [insumos, locais, estoque, movs] = await Promise.all(TABLES.map(fetchTable));
+    if (pushing) { reloadWanted = true; return; }
+    S = {insumos, locais, estoque, movs}; save(); renderAll(); live();
+  } catch (e) { offline(); throw e; }
+}
+function diff(name, before, after) {
+  const t = T[name], old = new Map(), seen = new Map();
+  (before[name] || []).forEach((x, i) => { const r = t.to(x, i); old.set(t.key(r), r); });
+  (after[name] || []).forEach((x, i) => { const r = t.to(x, i); seen.set(t.key(r), r); });
+  const ups = [...seen].filter(([k, r]) => !old.has(k) || JSON.stringify(old.get(k)) !== JSON.stringify(r)).map(([, r]) => r);
+  const dels = [...old].filter(([k]) => !seen.has(k)).map(([, r]) => r);
+  return {ups, dels};
+}
+async function sync(before, after) {
+  if (!CLOUD) return true;
+  pushing++; setStatus('Salvando…', 'busy');
+  try {
+    const plan = TABLES.map(n => [n, diff(n, before, after)]);
+    for (const [n, {ups}] of plan)
+      for (let i = 0; i < ups.length; i += 500) await q(sb.from(n).upsert(ups.slice(i, i + 500), {onConflict: T[n].pk.join(',')}));
+    for (const [n, {dels}] of plan.slice().reverse()) {
+      const pk = T[n].pk;
+      if (pk.length === 1) {
+        const ks = dels.map(r => r[pk[0]]);
+        for (let i = 0; i < ks.length; i += 150) await q(sb.from(n).delete().in(pk[0], ks.slice(i, i + 150)));
+      } else {
+        for (let i = 0; i < dels.length; i += 20) await Promise.all(dels.slice(i, i + 20).map(r => q(sb.from(n).delete().match({local: r.local, insumo_id: r.insumo_id}))));
+      }
+    }
+    pushing--; live();
+    if (reloadWanted && !pushing) { reloadWanted = false; reloadAll().catch(() => {}); }
+    return true;
+  } catch (e) {
+    pushing--; reloadWanted = false;
+    toast('Não foi possível salvar: ' + errMsg(e), null, true);
+    reloadAll().catch(() => {});
+    return false;
+  }
+}
+function subscribe() {
+  if (channel) sb.removeChannel(channel);
+  channel = sb.channel('estoque-equipe');
+  TABLES.forEach(t => channel.on('postgres_changes', {event: '*', schema: 'public', table: t}, p => onRemote(t, p)));
+  channel.subscribe(st => { if (st === 'SUBSCRIBED') live(); else if (st === 'CHANNEL_ERROR' || st === 'TIMED_OUT') offline(); });
+}
+function onRemote(t, p) {
+  clearTimeout(reloadT); reloadT = setTimeout(() => reloadAll().catch(() => {}), 350);
+  const n = p && p.new;
+  if (t === 'movs' && p.eventType === 'INSERT' && n && n.criado_por && me && n.criado_por !== me.email) {
+    const i = insById().get(n.insumo_id), who = n.resp || n.criado_por.split('@')[0];
+    toast(`${who}: ${String(n.tipo).toLowerCase()} de ${fmt(n.qtd)} · ${i ? i.nome : n.insumo_id}`);
+  }
+}
+function showLogin(msg) {
+  $('#login').hidden = false; document.body.classList.add('locked');
+  $('#loginErr').textContent = msg || '';
+  closeModal(); closeSheet(true);
+}
+function hideLogin() { $('#login').hidden = true; document.body.classList.remove('locked'); }
+function renderAccount() {
+  const email = me ? me.email : '';
+  $$('[data-acct-email]').forEach(el => el.textContent = email);
+  $$('[data-acct]').forEach(el => el.hidden = !me);
+}
+async function enter(user) {
+  me = user; hideLogin(); renderAccount(); renderAll();
+  setStatus('Carregando…', 'busy');
+  try {
+    await reloadAll();
+    if (TABLES.every(t => !S[t].length)) await offerSeed();
+  } catch (e) { toast('Sem conexão com o banco de dados. Mostrando a última versão salva.', null, true); }
+  subscribe();
+}
+async function offerSeed() {
+  const d = localData();
+  if (!confirm(`O banco de dados da equipe está vazio.\n\nEnviar os dados deste aparelho para começar?\n${d.insumos.length} insumos · ${d.locais.length} locais · ${d.estoque.length} itens de estoque · ${d.movs.length} movimentações`)) return;
+  if (await sync(EMPTY(), d)) { await reloadAll(); toast('Dados enviados para a equipe'); }
+}
+async function startCloud() {
+  if (!window.supabase || !window.supabase.createClient) return showLogin('Não foi possível carregar a conexão com o banco de dados. Verifique a internet e recarregue a página.');
+  sb = window.supabase.createClient(CFG.url, CFG.key, {auth: {persistSession: true, autoRefreshToken: true, detectSessionInUrl: false, storageKey: 'pasteur-estoque-auth'}});
+  sb.auth.onAuthStateChange(ev => { if (ev === 'SIGNED_OUT' && me) { me = null; renderAccount(); showLogin(); } });
+  let session = null;
+  try { session = (await sb.auth.getSession()).data.session; } catch (e) {}
+  if (session) enter(session.user); else showLogin();
+}
+function loginForm() {
+  const f = $('#loginForm');
+  f.onsubmit = async e => {
+    e.preventDefault();
+    const btn = $('button[type=submit]', f), err = $('#loginErr');
+    if (!sb) return startCloud();
+    err.textContent = ''; btn.disabled = true; btn.textContent = 'Entrando…';
+    try {
+      const {data, error} = await sb.auth.signInWithPassword({email: f.email.value.trim(), password: f.password.value});
+      if (error) throw error;
+      f.password.value = '';
+      enter(data.user);
+    } catch (e2) {
+      const m = String(e2.message || e2);
+      err.textContent = /invalid login/i.test(m) ? 'E-mail ou senha incorretos.' : /not confirmed/i.test(m) ? 'Este e-mail ainda não foi confirmado. Peça ao administrador para liberar seu acesso.' : 'Não foi possível entrar: ' + errMsg(e2);
+    } finally { btn.disabled = false; btn.textContent = 'Entrar'; }
+  };
+}
+async function logout() {
+  if (!confirm('Sair da sua conta neste aparelho?')) return;
+  try { localStorage.removeItem(CACHE); } catch (e) {}
+  if (channel) { sb.removeChannel(channel); channel = null; }
+  S = EMPTY(); me = null; renderAccount(); renderAll(); showLogin();
+  try { await sb.auth.signOut(); } catch (e) {}
+}
+function modalSenha() {
+  openModal(head('Sua conta', 'Alterar senha') + `
+  <form class="form" id="fPwd" autocomplete="off">
+    <label class="full">E-mail<input value="${esc(me ? me.email : '')}" readonly style="color:#999"></label>
+    <label>Nova senha<input name="p1" type="password" minlength="6" required autocomplete="new-password" autofocus></label>
+    <label>Repita a nova senha<input name="p2" type="password" minlength="6" required autocomplete="new-password"></label>
+    <div class="error" id="pwdErr"></div>
+    <div class="form-actions"><div class="right"><button class="btn ghost" type="button" data-close>Cancelar</button><button class="btn accent" type="submit">Salvar senha</button></div></div>
+  </form>`, root => {
+    $('#fPwd', root).onsubmit = async ev => {
+      ev.preventDefault();
+      const f = ev.target, err = t => $('#pwdErr', root).textContent = t;
+      if (f.p1.value.length < 6) return err('A senha precisa ter pelo menos 6 caracteres.');
+      if (f.p1.value !== f.p2.value) return err('As senhas não são iguais.');
+      const {error} = await sb.auth.updateUser({password: f.p1.value});
+      if (error) return err('Não foi possível alterar: ' + errMsg(error));
+      closeModal(); toast('Senha alterada');
+    };
+  });
 }
 
 /* ---------------- Cálculo ---------------- */
@@ -411,7 +619,7 @@ function renderMovs() {
   sortRows(list, f.sort);
   const t = $('#movTable');
   t.innerHTML = thead([{t: 'Data', k: 'data'}, {t: 'Tipo', k: 'tipo'}, {t: 'Insumo', k: 'nome'}, {t: 'Qtd.', k: 'qtd', r: 1}, {t: 'Local', k: 'local'}, {t: 'Destino', k: 'destino', cls: 'hide-sm'}, {t: 'Responsável', k: 'resp', cls: 'hide-sm'}, {t: 'Observações', cls: 'hide-sm'}, {t: ''}], f.sort) +
-    '<tbody>' + (list.map(m => `<tr data-uid="${m.uid}"><td class="num" style="white-space:nowrap">${fmtDate(m.data)}</td><td><span class="pill ${m.tipo}">${m.tipo}</span></td><td class="name">${esc(m.nome)}<div class="id" style="font:400 11px var(--mono);color:#777">${esc(m.id)}</div></td><td class="r num"><strong>${fmt(m.qtd)}</strong> <span class="muted" style="font-size:11px">${esc(m.un)}</span></td><td class="loc">${esc(m.local)}</td><td class="loc hide-sm">${esc(m.destino) || '<span class="muted">—</span>'}</td><td class="hide-sm">${esc(m.resp) || '<span class="muted">—</span>'}</td><td class="muted hide-sm" style="max-width:220px">${esc(m.obs) || '—'}</td><td><div class="row-actions"><button class="icon-btn" data-a="edit" title="Editar">${ICON.edit}</button><button class="icon-btn del" data-a="del" title="Excluir">${ICON.del}</button></div></td></tr>`).join('') || '<tr><td colspan="9" class="empty">Nenhuma movimentação encontrada.</td></tr>') + '</tbody>';
+    '<tbody>' + (list.map(m => `<tr data-uid="${m.uid}"><td class="num" style="white-space:nowrap">${fmtDate(m.data)}</td><td><span class="pill ${m.tipo}">${m.tipo}</span></td><td class="name">${esc(m.nome)}<div class="id" style="font:400 11px var(--mono);color:#777">${esc(m.id)}</div></td><td class="r num"><strong>${fmt(m.qtd)}</strong> <span class="muted" style="font-size:11px">${esc(m.un)}</span></td><td class="loc">${esc(m.local)}</td><td class="loc hide-sm">${esc(m.destino) || '<span class="muted">—</span>'}</td><td class="hide-sm">${esc(m.resp) || '<span class="muted">—</span>'}${m.por ? `<div style="font-size:11px;color:#6f6f6b" title="Registrado por">${esc(m.por)}</div>` : ''}</td><td class="muted hide-sm" style="max-width:220px">${esc(m.obs) || '—'}</td><td><div class="row-actions"><button class="icon-btn" data-a="edit" title="Editar">${ICON.edit}</button><button class="icon-btn del" data-a="del" title="Excluir">${ICON.del}</button></div></td></tr>`).join('') || '<tr><td colspan="9" class="empty">Nenhuma movimentação encontrada.</td></tr>') + '</tbody>';
   $$('tbody tr[data-uid]', t).forEach(tr => tr.onclick = e => {
     const b = e.target.closest('button[data-a]'); if (!b) return;
     const i = S.movs.findIndex(m => m.uid === tr.dataset.uid);
@@ -504,7 +712,7 @@ function parseIns(v) {
 
 function modalMov(index = null, preset = {}) {
   const editing = index !== null && index >= 0;
-  const m = editing ? {...S.movs[index]} : {data: todayISO(), tipo: preset.tipo || 'SAÍDA', local: preset.local || F.est.local || '', id: preset.id || '', qtd: '', resp: localStorage.getItem(KEY + '-resp') || '', obs: '', destino: ''};
+  const m = editing ? {...S.movs[index]} : {data: todayISO(), tipo: preset.tipo || 'SAÍDA', local: preset.local || F.est.local || '', id: preset.id || '', qtd: '', resp: localStorage.getItem(KEY + '-resp') || (me ? me.email.split('@')[0].toUpperCase() : ''), obs: '', destino: ''};
   const ins = m.id ? insById().get(m.id) : null;
   openModal(head(editing ? 'Editar' : 'Nova', 'Movimentação') + `
   <form class="form" id="fMov" autocomplete="off">
@@ -747,7 +955,7 @@ function importWorkbook(buf) {
     movs.push({uid: uid(), data: toISO(r.data) || todayISO(), local, id, tipo, qtd, resp: str(r.responsavel), obs: obs === 'N/A' ? '' : obs, destino: tipo === 'TRANSFERÊNCIA' ? str(r.destino) : ''});
   }
   if (!insumos.length) throw new Error('Nenhum insumo encontrado na aba INSUMOS.');
-  return {insumos, locais, estoque, movs};
+  return dedupe({insumos, locais, estoque, movs});
 }
 function handleFile(file) {
   const rd = new FileReader();
@@ -756,7 +964,7 @@ function handleFile(file) {
       let data;
       if (/\.json$/i.test(file.name)) { const j = JSON.parse(new TextDecoder().decode(rd.result)); data = j.data || j; if (!data.insumos || !data.estoque) throw new Error('Backup inválido.'); }
       else { if (!needXLSX()) return; data = importWorkbook(rd.result); }
-      if (!confirm(`Importar "${file.name}"?\n\n${data.insumos.length} insumos · ${data.locais.length} locais · ${data.estoque.length} itens de estoque · ${data.movs.length} movimentações\n\nOs dados atuais serão substituídos (você pode desfazer logo em seguida).`)) return;
+      if (!confirm(`Importar "${file.name}"?\n\n${data.insumos.length} insumos · ${data.locais.length} locais · ${data.estoque.length} itens de estoque · ${data.movs.length} movimentações\n\nOs dados atuais serão substituídos${CLOUD ? ' PARA TODA A EQUIPE' : ''} (você pode desfazer logo em seguida).`)) return;
       data.movs.forEach(m => { if (!m.uid) m.uid = uid(); });
       commit('Dados importados', () => { S = data; });
     } catch (e) { toast('Não foi possível importar: ' + e.message, null, true); }
@@ -778,8 +986,11 @@ document.addEventListener('click', e => {
   if (act === 'export-xlsx') exportXlsx();
   if (act === 'export-view') exportView();
   if (act === 'export-json') exportJson();
+  if (act === 'password') modalSenha();
+  if (act === 'logout') logout();
+  if (act === 'refresh') reloadAll().then(() => toast('Dados atualizados')).catch(e => toast('Não foi possível atualizar: ' + errMsg(e), null, true));
   if (act === 'import') { $('#fileInput').value = ''; $('#fileInput').click(); }
-  if (act === 'reset' && confirm('Restaurar os dados da planilha original? Tudo que foi registrado aqui será substituído.')) commit('Dados originais restaurados', () => { S = seedState(); });
+  if (act === 'reset' && confirm('Restaurar os dados da planilha original? Tudo que foi registrado será substituído' + (CLOUD ? ' PARA TODA A EQUIPE.' : '.'))) commit('Dados originais restaurados', () => { S = seedState(); });
 });
 $('#fileInput').onchange = e => e.target.files[0] && handleFile(e.target.files[0]);
 $('#overlay').addEventListener('mousedown', e => { if (e.target.id === 'overlay') closeModal(); });
@@ -798,9 +1009,17 @@ document.addEventListener('keydown', e => {
   if (e.key.toLowerCase() === 'n') { e.preventDefault(); modalMov(); }
   if (e.key === '/') { const s = $('.page.active .search'); if (s) { e.preventDefault(); s.focus(); } }
 });
-window.addEventListener('storage', e => { if (e.key === KEY) { S = load(); renderAll(); } });
+window.addEventListener('storage', e => { if (!CLOUD && e.key === KEY) { S = load(); renderAll(); } });
+// ao voltar para o app (iPhone suspende o app em segundo plano), busca as novidades
+document.addEventListener('visibilitychange', () => { if (CLOUD && me && document.visibilityState === 'visible') reloadAll().catch(() => {}); });
+window.addEventListener('online', () => { if (CLOUD && me) reloadAll().catch(() => {}); });
+window.addEventListener('offline', () => { if (CLOUD) offline(); });
 
+const PAGES = ['painel', 'estoque', 'movimentacoes', 'insumos', 'locais', 'guia'];
+window.addEventListener('hashchange', () => { const h = location.hash.slice(1); if (PAGES.includes(h) && h !== page) go(h); });
 const start = (location.hash || '').slice(1);
 if (['painel', 'estoque', 'movimentacoes', 'insumos', 'locais', 'guia'].includes(start)) page = start;
+if (CLOUD) { showLogin(); loginForm(); }
 go(page);
+if (CLOUD) startCloud();
 })();

@@ -30,13 +30,25 @@ python3 -m http.server 8000
 
 O deploy no GitHub Pages é automático a cada push na `main` (`.github/workflows/pages.yml`).
 
-## Dados
+## Dados e equipe
 
-Os dados ficam salvos no navegador (`localStorage`) de cada computador. Para levar os dados para outra máquina, use **Exportar planilha** ou **Baixar backup** e depois **Importar** no outro computador.
+Os dados ficam num banco de dados compartilhado no [Supabase](https://supabase.com). Toda a equipe vê as mesmas informações, atualizadas ao vivo, e cada movimentação guarda quem a registrou (`criado_por`).
+
+### Configuração (uma vez)
+
+1. No Supabase, abra **SQL Editor**, cole o conteúdo de [`supabase/schema.sql`](supabase/schema.sql) e clique em **Run**.
+2. Em **Authentication → Sign In / Providers**, **desative** "Allow new users to sign up". Assim só entra quem o administrador cadastrar.
+3. Em **Authentication → Users → Add user → Create new user**, cadastre cada pessoa com e-mail e senha, marcando **Auto Confirm User**.
+4. No primeiro acesso, a plataforma oferece enviar os dados atuais (os da planilha) para o banco.
+
+A URL do projeto e a chave *publishable* ficam em `config.js`. Essa chave é pública por design: o acesso aos dados é protegido pelo login e pelas regras de segurança (RLS) do `schema.sql`. Se os valores de `config.js` forem apagados, a plataforma volta a funcionar só no navegador, sem equipe.
 
 ## Arquivos
 
 - `index.html`: layout e estilos
 - `app.js`: toda a lógica da aplicação
 - `seed.js`: dados iniciais extraídos da planilha
+- `config.js`: conexão com o Supabase
+- `supabase/schema.sql`: tabelas, regras de segurança e tempo real do banco
+- `supabase.min.js`: [supabase-js](https://github.com/supabase/supabase-js) 2.117.2 (MIT)
 - `xlsx.full.min.js`: [SheetJS](https://sheetjs.com) 0.18.5 (Apache-2.0), para ler e gravar Excel
