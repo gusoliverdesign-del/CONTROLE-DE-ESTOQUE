@@ -1129,10 +1129,87 @@ function toISO(v) {
   const s = str(v); const m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/); if (m) return `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`;
   return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : '';
 }
+// Atualização só do estoque: troca os itens de cada local, mantendo insumos, locais,
+// movimentações e os estoques mínimos que já existiam (a menos que a planilha traga a coluna de mínimo).
+function stockSheet(wb) {
+  for (const name of wb.SheetNames) {
+    const ws = wb.Sheets[name];
+    let rows = rowsWithHeader(ws, ['LOCAL', 'ESTOQUE_INICIAL']), modo = 'inicial';
+    if (!rows.length) { rows = rowsWithHeader(ws, ['LOCAL', 'ESTOQUE_ATUAL']); modo = 'contagem'; }
+    if (!rows.length) { rows = rowsWithHeader(ws, ['LOCAL', 'QUANTIDADE']); modo = 'contagem'; }
+    if (!rows.length) continue;
+    if (!rows.some(r => 'id_insumo' in r || 'nome_insumo' in r)) continue;
+    const out = [], filled = [], skipped = [];
+    let lastLocal = '', lastTipo = '';
+    rows.forEach((r, i) => {
+      const id = str(r.id_insumo), nome = str(r.nome_insumo);
+      const qRaw = modo === 'inicial' ? r.estoque_inicial : modo === 'contagem' && 'estoque_atual' in r ? r.estoque_atual : r.quantidade;
+      if (!id && !nome && (qRaw === null || qRaw === undefined || qRaw === '')) return; // linha vazia
+      let local = str(r.local), tipo = str(r.tipo_local);
+      if (!local && lastLocal) { local = lastLocal; tipo = tipo || lastTipo; filled.push(`linha ${i + 2}: ${id || nome} → ${local}`); }
+      if (!local || (!id && !nome)) { skipped.push(`linha ${i + 2}`); return; }
+      const q = Number(qRaw);
+      if (qRaw === null || qRaw === '' || !isFinite(q)) { skipped.push(`linha ${i + 2} (quantidade inválida)`); return; }
+      lastLocal = local; lastTipo = tipo;
+      const mn = 'estoque_minimo' in r ? r.estoque_minimo : undefined;
+      out.push({local, tipo, id, nome, un: str(r.unidade), q, min: mn === undefined ? undefined : (mn === null || mn === '' ? null : Number(mn))});
+    });
+    if (out.length) return {stockOnly: true, modo, rows: out, filled, skipped, sheet: name};
+  }
+  return null;
+}
+function applyStock(cur, st) {
+  const next = clone(cur);
+  const byId = new Map(next.insumos.map(i => [i.id, i])), byName = new Map(next.insumos.map(i => [norm(i.nome), i]));
+  const novosIns = [], novosLoc = [];
+  const ent = new Map(), sai = new Map(), add = (m, k, v) => m.set(k, (m.get(k) || 0) + v);
+  for (const m of next.movs) {
+    const q = Number(m.qtd) || 0;
+    if (m.tipo === 'ENTRADA') add(ent, m.local + '|' + m.id, q);
+    else if (m.tipo === 'SAÍDA') add(sai, m.local + '|' + m.id, q);
+    else { add(sai, m.local + '|' + m.id, q); add(ent, m.destino + '|' + m.id, q); }
+  }
+  const oldMin = new Map(next.estoque.map(e => [e.local + '|' + e.id, e.min]));
+  const merged = new Map();
+  for (const r of st.rows) {
+    let ins = (r.id && byId.get(r.id)) || (r.nome && byName.get(norm(r.nome)));
+    if (!ins) {
+      ins = {id: r.id || nextIdFrom(next.insumos), nome: (r.nome || r.id).toUpperCase(), un: r.un};
+      next.insumos.push(ins); byId.set(ins.id, ins); byName.set(norm(ins.nome), ins); novosIns.push(ins.nome);
+    }
+    if (!next.locais.some(l => l.nome === r.local)) { next.locais.push({nome: r.local, tipo: r.tipo || 'Sala'}); novosLoc.push(r.local); }
+    const k = r.local + '|' + ins.id;
+    const e = merged.get(k) || {local: r.local, id: ins.id, ini: 0, min: oldMin.has(k) ? oldMin.get(k) : null, dup: 0};
+    e.ini += r.q; e.dup++;
+    if (r.min !== undefined) e.min = r.min;
+    merged.set(k, e);
+  }
+  const estoque = [...merged.values()].map(e => {
+    const k = e.local + '|' + e.id;
+    // "contagem": a planilha traz o saldo atual; ajusta o inicial para manter o histórico de movimentações
+    const ini = st.modo === 'contagem' ? e.ini - (ent.get(k) || 0) + (sai.get(k) || 0) : e.ini;
+    return {local: e.local, id: e.id, ini, min: e.min};
+  });
+  const removed = next.estoque.filter(e => !merged.has(e.local + '|' + e.id));
+  const kept = estoque.filter(e => oldMin.has(e.local + '|' + e.id)).length;
+  next.estoque = estoque;
+  const report = {
+    itens: estoque.length, novosVinculos: estoque.length - kept, removidos: removed.length,
+    total: [...merged.values()].reduce((a, e) => a + e.ini, 0),
+    juntados: [...merged.values()].filter(e => e.dup > 1).map(e => `${(byId.get(e.id) || {}).nome || e.id} em ${e.local}`),
+    novosIns, novosLoc, comMov: next.movs.length,
+  };
+  return {next, report};
+}
+const nextIdFrom = list => 'INS-' + String(list.reduce((m, i) => Math.max(m, parseInt(String(i.id).replace(/\D/g, '')) || 0), 0) + 1).padStart(3, '0');
 function importWorkbook(buf) {
   const wb = XLSX.read(buf, {type: 'array', cellDates: true});
   const insS = findSheet(wb, 'INSUMOS'), estS = findSheet(wb, 'ESTOQUE'), movS = findSheet(wb, 'MOVIMENTAÇÕES'), locS = findSheet(wb, 'LOCAIS');
-  if (!insS || !estS) throw new Error('A planilha precisa das abas INSUMOS e ESTOQUE.');
+  if (!insS || !estS) {
+    const st = stockSheet(wb);
+    if (st) return st;
+    throw new Error('não encontrei as abas INSUMOS e ESTOQUE, nem uma tabela com as colunas LOCAL, ID_INSUMO e ESTOQUE_INICIAL.');
+  }
   const insumos = [], seen = new Set();
   for (const r of rowsWithHeader(insS, ['ID_INSUMO', 'NOME_INSUMO'])) {
     const id = str(r.id_insumo), nome = str(r.nome_insumo);
@@ -1170,6 +1247,26 @@ function handleFile(file) {
       let data;
       if (/\.json$/i.test(file.name)) { const j = JSON.parse(new TextDecoder().decode(rd.result)); data = j.data || j; if (!data.insumos || !data.estoque) throw new Error('Backup inválido.'); }
       else { if (!needXLSX()) return; data = importWorkbook(rd.result); }
+      if (data.stockOnly) {
+        const {next, report: r} = applyStock(S, data);
+        const lines = [
+          `Atualizar o estoque com "${file.name}"?`, '',
+          `${fmt(r.itens)} itens em ${new Set(next.estoque.map(e => e.local)).size} locais · ${fmt(r.total)} unidades no total`,
+          data.modo === 'contagem' ? 'As quantidades serão o SALDO ATUAL de cada item (o histórico de movimentações é mantido).' : 'As quantidades serão o ESTOQUE INICIAL de cada item.',
+          `${fmt(r.novosVinculos)} itens novos nos locais · ${fmt(r.removidos)} itens que não estão na planilha serão removidos`,
+          'Os estoques mínimos já cadastrados são mantidos.',
+        ];
+        if (r.novosIns.length) lines.push(`Insumos novos: ${r.novosIns.slice(0, 5).join(', ')}${r.novosIns.length > 5 ? '…' : ''}`);
+        if (r.novosLoc.length) lines.push(`Locais novos: ${r.novosLoc.join(', ')}`);
+        if (data.filled.length) lines.push('', 'Linhas sem LOCAL (consideradas do local da linha anterior):', ...data.filled.slice(0, 5));
+        if (r.juntados.length) lines.push('', 'Itens repetidos no mesmo local foram somados:', ...r.juntados.slice(0, 5));
+        if (data.skipped.length) lines.push('', `${data.skipped.length} linha(s) ignorada(s): ${data.skipped.slice(0, 5).join(', ')}`);
+        if (data.modo === 'inicial' && r.comMov) lines.push('', r.comMov === 1 ? 'A movimentação já registrada continua valendo sobre o novo estoque inicial.' : `As ${r.comMov} movimentações já registradas continuam valendo sobre o novo estoque inicial.`);
+        lines.push('', CLOUD ? 'Isso vale PARA TODA A EQUIPE (você pode desfazer logo em seguida).' : 'Você pode desfazer logo em seguida.');
+        if (!confirm(lines.join('\n'))) return;
+        commit('Estoque atualizado pela planilha', () => { S = next; });
+        return;
+      }
       if (!confirm(`Importar "${file.name}"?\n\n${data.insumos.length} insumos · ${data.locais.length} locais · ${data.estoque.length} itens de estoque · ${data.movs.length} movimentações\n\nOs dados atuais serão substituídos${CLOUD ? ' PARA TODA A EQUIPE' : ''} (você pode desfazer logo em seguida).`)) return;
       data.movs.forEach(m => { if (!m.uid) m.uid = uid(); });
       commit('Dados importados', () => { S = data; });
